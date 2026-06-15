@@ -1,0 +1,47 @@
+$ErrorActionPreference = "Stop"
+
+$projectRoot = Split-Path -Parent $PSScriptRoot
+$distRoot = Join-Path $projectRoot "dist"
+$bundleRoot = Join-Path $distRoot "LocalMiroThinker"
+$appRoot = Join-Path $bundleRoot "app"
+$runtimeRoot = Join-Path $bundleRoot "runtime"
+$launcherSource = Join-Path $projectRoot "launcher\\LocalMiroThinkerLauncher.cs"
+$launcherExe = Join-Path $bundleRoot "LocalMiroThinkerLauncher.exe"
+$compiler = "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe"
+$bundledNode = "C:\\Users\\zhao9\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\node\\bin\\node.exe"
+
+if (-not (Test-Path $compiler)) {
+  throw "csc.exe not found at $compiler"
+}
+
+if (-not (Test-Path $bundledNode)) {
+  throw "Bundled node.exe not found at $bundledNode"
+}
+
+if (Test-Path $bundleRoot) {
+  Remove-Item -LiteralPath $bundleRoot -Recurse -Force
+}
+
+New-Item -ItemType Directory -Path $appRoot -Force | Out-Null
+New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
+
+Copy-Item -LiteralPath (Join-Path $projectRoot "server.js") -Destination $appRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot "package.json") -Destination $appRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot "README.md") -Destination $bundleRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot "DEPLOYMENT.md") -Destination $bundleRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot "public") -Destination $appRoot -Recurse
+Copy-Item -LiteralPath $bundledNode -Destination (Join-Path $runtimeRoot "node.exe")
+
+& $compiler /target:winexe /platform:x64 /nologo /out:$launcherExe /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll $launcherSource
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $launcherExe)) {
+  throw "Launcher build failed."
+}
+
+$zipPath = Join-Path $distRoot "LocalMiroThinker-win-x64.zip"
+if (Test-Path $zipPath) {
+  Remove-Item -LiteralPath $zipPath -Force
+}
+
+Compress-Archive -Path $bundleRoot -DestinationPath $zipPath
+Write-Host "Created distribution folder: $bundleRoot"
+Write-Host "Created zip package: $zipPath"
