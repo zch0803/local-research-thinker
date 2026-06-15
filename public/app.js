@@ -1,0 +1,1003 @@
+const $ = (selector) => document.querySelector(selector);
+
+const storage = {
+  config: "local-mirothinker-config",
+  sessions: "local-mirothinker-sessions",
+  active: "local-mirothinker-active-session",
+};
+
+const state = {
+  config: JSON.parse(localStorage.getItem(storage.config) || "{}"),
+  sessions: JSON.parse(localStorage.getItem(storage.sessions) || "[]"),
+  activeId: localStorage.getItem(storage.active),
+  modelPresets: [],
+  running: false,
+  pendingAssistantId: null,
+  attachments: [],
+  sessionQuery: "",
+  traceOpenById: {},
+};
+
+const fields = ["llmBaseUrl", "llmModel", "llmApiKey", "searchProvider", "serperApiKey", "tavilyApiKey"];
+
+function now() {
+  return new Date().toISOString();
+}
+
+function uid() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function cloneSessionWithFreshIds(session) {
+  const nextId = uid();
+  return {
+    ...session,
+    id: nextId,
+    messages: (session.messages || []).map((message) => ({
+      ...message,
+      id: uid(),
+    })),
+  };
+}
+
+function saveSessions() {
+  localStorage.setItem(storage.sessions, JSON.stringify(state.sessions));
+  localStorage.setItem(storage.active, state.activeId || "");
+}
+
+function exportSessions() {
+  const payload = {
+    format: "local-mirothinker.sessions.v1",
+    exportedAt: now(),
+    sessions: state.sessions,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  link.href = url;
+  link.download = `local-mirothinker-sessions-${stamp}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function downloadTextFile(filename, content, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function copyText(text) {
+  const value = String(text || "");
+  if (!value) return;
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
+}
+
+function sessionSlug(session) {
+  const base = String(session?.title || "session")
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/gi, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+  return base || "session";
+}
+
+function renderUserContentForHtml(text) {
+  return `<p>${escapeHtml(String(text || "")).replace(/\n/g, "<br>")}</p>`;
+}
+
+function sessionToMarkdown(session) {
+  const parts = [`# ${session.title || "Session"}`, ""];
+  for (const message of session.messages || []) {
+    if (message.role === "user") {
+      parts.push("## User");
+      parts.push(message.content || "");
+    } else {
+      parts.push("## Assistant");
+      parts.push(message.content || "");
+    }
+    if (message.attachments?.length) {
+      parts.push("");
+      parts.push(`Attachments: ${message.attachments.map((file) => file.name).join(", ")}`);
+    }
+    parts.push("");
+  }
+  return parts.join("\n");
+}
+
+function sessionToHtmlDocument(session) {
+  const body = (session.messages || [])
+    .map((message) => {
+      const heading = message.role === "user" ? "User" : "Assistant";
+      const content = message.role === "assistant"
+        ? renderMarkdown(message.content || "")
+        : renderUserContentForHtml(message.content || "");
+      const attachments = message.attachments?.length
+        ? `<p><strong>Attachments:</strong> ${message.attachments.map((file) => escapeHtml(file.name)).join(", ")}</p>`
+        : "";
+      return `<section class="export-message"><h2>${heading}</h2>${content}${attachments}</section>`;
+    })
+    .join("");
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>${escapeHtml(session.title || "Session")}</title>
+    <style>
+      body { font-family: "Segoe UI", Arial, sans-serif; margin: 32px; color: #1c2430; line-height: 1.65; }
+      h1 { font-size: 28px; margin: 0 0 24px; }
+      h2 { font-size: 18px; margin: 0 0 10px; }
+      section { margin: 0 0 24px; padding: 0 0 18px; border-bottom: 1px solid #d9e0e8; }
+      pre { padding: 12px; background: #f8fafc; border: 1px solid #d9e0e8; border-radius: 8px; overflow: auto; }
+      code { font-family: Consolas, monospace; }
+      table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+      th, td { border: 1px solid #d9e0e8; padding: 8px 10px; text-align: left; vertical-align: top; }
+      th { background: #f5f8fb; }
+      a { color: #1967d2; text-decoration: none; }
+    </style>
+  </head>
+  <body>
+    <h1>${escapeHtml(session.title || "Session")}</h1>
+    ${body}
+  </body>
+</html>`;
+}
+
+function exportActiveSessionMarkdown() {
+  const session = activeSession();
+  downloadTextFile(`${sessionSlug(session)}.md`, sessionToMarkdown(session), "text/markdown;charset=utf-8");
+}
+
+function exportActiveSessionHtml() {
+  const session = activeSession();
+  downloadTextFile(`${sessionSlug(session)}.html`, sessionToHtmlDocument(session), "text/html;charset=utf-8");
+}
+
+function exportActiveSessionPdf() {
+  const session = activeSession();
+  const html = sessionToHtmlDocument(session);
+  const popup = window.open("", "_blank", "noopener,noreferrer,width=960,height=720");
+  if (!popup) {
+    window.alert("Popup was blocked. Please allow popups and try again.");
+    return;
+  }
+  popup.document.open();
+  popup.document.write(html);
+  popup.document.close();
+  popup.focus();
+  popup.onload = () => {
+    popup.print();
+  };
+}
+
+async function importSessions(file) {
+  if (!file) return;
+  const raw = await file.text();
+  const parsed = JSON.parse(raw);
+  const importedSessions = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed.sessions)
+      ? parsed.sessions
+      : [];
+
+  if (!importedSessions.length) {
+    throw new Error("No sessions found in the selected file.");
+  }
+
+  const existingIds = new Set(state.sessions.map((session) => session.id));
+  const normalized = importedSessions.map((session) => {
+    if (!session || !Array.isArray(session.messages)) return null;
+    const safeSession = {
+      id: session.id || uid(),
+      title: session.title || "Imported Session",
+      createdAt: session.createdAt || now(),
+      updatedAt: session.updatedAt || now(),
+      messages: session.messages.map((message) => ({
+        id: message.id || uid(),
+        role: message.role || "assistant",
+        content: message.content || "",
+        attachments: message.attachments || [],
+        trace: message.trace || [],
+        done: message.done,
+        createdAt: message.createdAt || now(),
+        updatedAt: message.updatedAt,
+      })),
+    };
+    return existingIds.has(safeSession.id) ? cloneSessionWithFreshIds(safeSession) : safeSession;
+  }).filter(Boolean);
+
+  state.sessions = [...normalized, ...state.sessions];
+  if (!state.activeId && state.sessions.length) {
+    state.activeId = state.sessions[0].id;
+  }
+  saveSessions();
+  renderAll();
+  return normalized.length;
+}
+
+function activeSession() {
+  let session = state.sessions.find((item) => item.id === state.activeId);
+  if (!session) session = createSession(false);
+  return session;
+}
+
+function createSession(render = true) {
+  const session = { id: uid(), title: "新会话", createdAt: now(), updatedAt: now(), messages: [] };
+  state.sessions.unshift(session);
+  state.activeId = session.id;
+  saveSessions();
+  if (render) renderAll();
+  return session;
+}
+
+function setActiveSession(id) {
+  state.activeId = id;
+  saveSessions();
+  renderAll();
+}
+
+async function loadDefaults() {
+  const response = await fetch("/api/defaults");
+  const { defaults } = await response.json();
+  state.modelPresets = defaults.modelPresets || [];
+  state.config = { ...defaults, ...state.config };
+  if (["deepseek-chat", "deepseek-reasoner"].includes(state.config.llmModel)) {
+    state.config.llmBaseUrl = "https://api.deepseek.com/v1";
+    state.config.llmModel = "deepseek-v4-flash";
+  }
+  populateModelPresets();
+  syncConfigFields();
+  if (!state.sessions.length) createSession(false);
+  if (!state.sessions.some((item) => item.id === state.activeId)) state.activeId = state.sessions[0]?.id;
+  saveSessions();
+  renderAll();
+}
+
+function populateModelPresets() {
+  for (const id of ["composerModel", "modelPreset"]) {
+    const select = $("#" + id);
+    select.innerHTML = "";
+    for (const preset of state.modelPresets) {
+      const option = document.createElement("option");
+      option.value = preset.label;
+      option.textContent = preset.label;
+      select.appendChild(option);
+    }
+  }
+  selectPresetForCurrentConfig();
+}
+
+function selectPresetForCurrentConfig() {
+  const match = state.modelPresets.find(
+    (preset) => preset.baseUrl === state.config.llmBaseUrl && preset.model === state.config.llmModel
+  );
+  const value = match?.label || "Custom";
+  $("#composerModel").value = value;
+  $("#modelPreset").value = value;
+}
+
+function applyPreset(label) {
+  const preset = state.modelPresets.find((item) => item.label === label);
+  if (!preset || preset.label === "Custom") return;
+  state.config.llmBaseUrl = preset.baseUrl;
+  state.config.llmModel = preset.model;
+  syncConfigFields();
+  saveConfig();
+}
+
+function syncConfigFields() {
+  for (const id of fields) {
+    const el = $("#" + id);
+    if (el) el.value = state.config[id] || "";
+  }
+  $("#thinkingMode").setAttribute("aria-pressed", String(Boolean(state.config.thinkingMode)));
+  selectPresetForCurrentConfig();
+}
+
+function saveConfig() {
+  for (const id of fields) state.config[id] = $("#" + id).value.trim();
+  state.config.thinkingMode = $("#thinkingMode").getAttribute("aria-pressed") === "true";
+  localStorage.setItem(storage.config, JSON.stringify(state.config));
+  selectPresetForCurrentConfig();
+}
+
+function titleFromQuestion(text) {
+  const compact = String(text || "").replace(/\s+/g, " ").trim();
+  return compact.length > 28 ? compact.slice(0, 28) + "..." : compact || "新会话";
+}
+
+function escapeHtml(text) {
+  return String(text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function renderInlineMarkdown(text) {
+  let html = escapeHtml(text);
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+  html = html.replace(/&lt;br\s*\/?&gt;/gi, "<br>");
+  return html;
+}
+
+function splitTableRow(line) {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function isTableSeparator(line) {
+  const cells = splitTableRow(line);
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function renderMarkdown(text) {
+  const lines = String(text || "").replace(/\r/g, "").split("\n");
+  const blocks = [];
+  let paragraph = [];
+  let listItems = [];
+  let codeLines = [];
+  let inCodeBlock = false;
+  let codeLanguage = "";
+  let index = 0;
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    blocks.push(`<p>${renderInlineMarkdown(paragraph.join(" "))}</p>`);
+    paragraph = [];
+  };
+
+  const flushList = () => {
+    if (!listItems.length) return;
+    blocks.push(`<ul>${listItems.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ul>`);
+    listItems = [];
+  };
+
+  const flushCode = () => {
+    const languageClass = codeLanguage ? ` class="language-${escapeHtml(codeLanguage)}"` : "";
+    blocks.push(`<pre><code${languageClass}>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+    codeLines = [];
+    codeLanguage = "";
+  };
+
+  while (index < lines.length) {
+    const line = lines[index];
+    const codeFence = line.match(/^```(.*)$/);
+    if (codeFence) {
+      if (inCodeBlock) {
+        flushCode();
+        inCodeBlock = false;
+      } else {
+        flushParagraph();
+        flushList();
+        inCodeBlock = true;
+        codeLanguage = codeFence[1].trim();
+      }
+      index += 1;
+      continue;
+    }
+
+    if (inCodeBlock) {
+      codeLines.push(line);
+      index += 1;
+      continue;
+    }
+
+    const nextLine = lines[index + 1] || "";
+    if (line.includes("|") && isTableSeparator(nextLine)) {
+      flushParagraph();
+      flushList();
+      const headerCells = splitTableRow(line);
+      const bodyRows = [];
+      index += 2;
+      while (index < lines.length && lines[index].trim() && lines[index].includes("|")) {
+        bodyRows.push(splitTableRow(lines[index]));
+        index += 1;
+      }
+      const headerHtml = headerCells.map((cell) => `<th>${renderInlineMarkdown(cell)}</th>`).join("");
+      const bodyHtml = bodyRows
+        .map((row) => `<tr>${headerCells.map((_, cellIndex) => `<td>${renderInlineMarkdown(row[cellIndex] || "")}</td>`).join("")}</tr>`)
+        .join("");
+      blocks.push(`<div class="table-wrap"><table><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`);
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,3})\s+(.*)$/);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      const level = heading[1].length;
+      blocks.push(`<h${level}>${renderInlineMarkdown(heading[2].trim())}</h${level}>`);
+      index += 1;
+      continue;
+    }
+
+    const bullet = line.match(/^\s*[-*]\s+(.*)$/);
+    if (bullet) {
+      flushParagraph();
+      listItems.push(bullet[1].trim());
+      index += 1;
+      continue;
+    }
+
+    if (!line.trim()) {
+      flushParagraph();
+      flushList();
+      index += 1;
+      continue;
+    }
+
+    paragraph.push(line.trim());
+    index += 1;
+  }
+
+  if (inCodeBlock) flushCode();
+  flushParagraph();
+  flushList();
+  return blocks.join("");
+}
+
+function renderSessions() {
+  const list = $("#sessions");
+  list.innerHTML = "";
+  const query = state.sessionQuery.trim().toLowerCase();
+  const sessions = query
+    ? state.sessions.filter((session) =>
+        `${session.title} ${session.messages.map((message) => message.content).join(" ")}`.toLowerCase().includes(query)
+      )
+    : state.sessions;
+  for (const session of sessions) {
+    const button = document.createElement("button");
+    button.className = `session-item${session.id === state.activeId ? " active" : ""}`;
+    button.type = "button";
+    button.addEventListener("click", () => setActiveSession(session.id));
+    const title = document.createElement("strong");
+    title.textContent = session.title;
+    const meta = document.createElement("span");
+    meta.textContent = `${session.messages.length} 条消息`;
+    button.append(title, meta);
+    list.appendChild(button);
+  }
+}
+
+function renderMessages() {
+  const session = activeSession();
+  const box = $("#messages");
+  const previousTop = box.scrollTop;
+  const previousHeight = box.scrollHeight;
+  const stickToBottom = previousHeight - previousTop - box.clientHeight < 120;
+  box.innerHTML = "";
+  if (!session.messages.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "输入问题后，每一轮研究都会保存在这个会话里。检索过程会折叠在对应回答下面。";
+    box.appendChild(empty);
+    renderQuestionNav();
+    return;
+  }
+  for (const message of session.messages) box.appendChild(renderMessage(message));
+  renderQuestionNav();
+  if (stickToBottom) box.scrollTop = box.scrollHeight;
+  else box.scrollTop = Math.max(0, previousTop + (box.scrollHeight - previousHeight));
+  updateActiveQuestionMarker();
+}
+
+function renderMessage(message) {
+  const article = document.createElement("article");
+  article.className = `message ${message.role}`;
+  article.dataset.id = message.id;
+  if (message.role === "user") article.dataset.questionId = message.id;
+
+  const label = document.createElement("div");
+  label.className = "message-label";
+  label.textContent = message.role === "user" ? "你" : "研究结果";
+
+  const content = document.createElement("div");
+  content.className = "message-content";
+  if (message.role === "assistant") {
+    content.innerHTML = renderMarkdown(message.content || "");
+  } else {
+    content.textContent = message.content || "";
+  }
+
+  article.append(label, content);
+  article.appendChild(renderMessageActions(message));
+
+  if (message.attachments?.length) {
+    const attachments = document.createElement("div");
+    attachments.className = "message-attachments";
+    for (const file of message.attachments) {
+      const chip = document.createElement("span");
+      chip.textContent = file.name;
+      attachments.appendChild(chip);
+    }
+    article.appendChild(attachments);
+  }
+
+  if (message.role === "assistant" && message.trace?.length) {
+    article.appendChild(renderTraceDetails(message));
+  }
+
+  return article;
+}
+
+function renderMessageActions(message) {
+  const row = document.createElement("div");
+  row.className = "message-actions";
+  if (message.role === "assistant") {
+    row.append(
+      createMessageAction("⧉", "复制回答", async () => {
+        await copyText(message.content || "");
+      }),
+      createMessageAction("⇩", "导出为 Markdown", () => {
+        exportAnswerMarkdown(message);
+      })
+    );
+  } else {
+    row.append(
+      createMessageAction("⧉", "复制问题", async () => {
+        await copyText(message.content || "");
+      }),
+      createMessageAction("✎", "修改并回填", () => {
+        editQuestion(message);
+      })
+    );
+  }
+  return row;
+}
+
+function createMessageAction(icon, label, onClick) {
+  const button = document.createElement("button");
+  button.className = "message-action-button";
+  button.type = "button";
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.textContent = icon;
+  button.addEventListener("click", async () => {
+    try {
+      await onClick();
+    } catch (error) {
+      window.alert(error.message || "操作失败");
+    }
+  });
+  return button;
+}
+
+function editQuestion(message) {
+  const question = $("#question");
+  question.value = message.content || "";
+  question.focus();
+  question.setSelectionRange(question.value.length, question.value.length);
+  document.querySelector(".composer")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function exportAnswerMarkdown(message) {
+  const session = activeSession();
+  const index = Math.max(1, session.messages.filter((item) => item.role === "assistant").indexOf(message) + 1);
+  const title = session.title || "session";
+  const content = `# ${title}\n\n## 回答 ${index}\n\n${message.content || ""}\n`;
+  downloadTextFile(`${sessionSlug(session)}-answer-${index}.md`, content, "text/markdown;charset=utf-8");
+}
+
+function renderTraceDetails(message) {
+  const trace = message.trace || [];
+  const details = document.createElement("details");
+  details.className = "trace-details";
+  details.open = state.traceOpenById[message.id] ?? (message.id === state.pendingAssistantId && !message.done);
+  details.addEventListener("toggle", () => {
+    state.traceOpenById[message.id] = details.open;
+  });
+  const summary = document.createElement("summary");
+  summary.textContent = `检索与思考过程（${trace.length} 条）`;
+  details.appendChild(summary);
+
+  const list = document.createElement("div");
+  list.className = "trace-list";
+  for (const item of trace) {
+    const row = document.createElement("div");
+    row.className = `trace-item ${item.kind || ""}`;
+    const title = document.createElement("strong");
+    title.textContent = item.title;
+    const detail = document.createElement("p");
+    detail.textContent = item.detail || "";
+    row.append(title, detail);
+    if (item.extras?.length) {
+      const chips = document.createElement("div");
+      chips.className = "chips";
+      for (const extra of item.extras.slice(0, 16)) {
+        const chip = document.createElement("span");
+        chip.className = "chip";
+        chip.textContent = typeof extra === "string" ? extra : extra.title || extra.url || JSON.stringify(extra);
+        chips.appendChild(chip);
+      }
+      row.appendChild(chips);
+    }
+    if (item.sources?.length) row.appendChild(renderSources(item.sources));
+    list.appendChild(row);
+  }
+  details.appendChild(list);
+  return details;
+}
+
+function renderSources(sources) {
+  const wrap = document.createElement("div");
+  wrap.className = "source-list";
+  for (const item of sources.slice(0, 8)) {
+    const a = document.createElement("a");
+    a.href = item.url;
+    a.target = "_blank";
+    a.rel = "noreferrer";
+    a.textContent = item.title || item.url;
+    wrap.appendChild(a);
+  }
+  return wrap;
+}
+
+function renderAll() {
+  renderSessions();
+  renderMessages();
+  renderAttachmentList();
+}
+
+function userQuestions() {
+  return activeSession().messages.filter((message) => message.role === "user");
+}
+
+function renderQuestionNav() {
+  const nav = $("#questionNav");
+  if (!nav) return;
+  nav.innerHTML = "";
+  const questions = userQuestions();
+  for (let index = 0; index < questions.length; index++) {
+    const message = questions[index];
+    const button = document.createElement("button");
+    button.className = "question-line";
+    button.type = "button";
+    button.dataset.questionId = message.id;
+    button.title = `问题 ${index + 1}: ${message.content.slice(0, 80)}`;
+    button.addEventListener("click", () => scrollToQuestion(message.id));
+    nav.appendChild(button);
+  }
+}
+
+function scrollToQuestion(id) {
+  const box = $("#messages");
+  const target = box.querySelector(`[data-question-id="${CSS.escape(id)}"]`);
+  if (!target) return;
+  box.scrollTo({ top: target.offsetTop - 12, behavior: "smooth" });
+  setActiveQuestion(id);
+}
+
+function setActiveQuestion(id) {
+  for (const line of document.querySelectorAll(".question-line")) {
+    line.classList.toggle("active", line.dataset.questionId === id);
+  }
+}
+
+function updateActiveQuestionMarker() {
+  const box = $("#messages");
+  const questions = [...box.querySelectorAll("[data-question-id]")];
+  if (!questions.length) return;
+  const anchor = box.scrollTop + 72;
+  let active = questions[0];
+  for (const question of questions) {
+    if (question.offsetTop <= anchor) active = question;
+  }
+  setActiveQuestion(active.dataset.questionId);
+}
+
+function pendingAssistant() {
+  const session = activeSession();
+  return session.messages.find((item) => item.id === state.pendingAssistantId);
+}
+
+function updateAssistantMessage(text) {
+  const message = pendingAssistant();
+  if (!message) return;
+  message.content = text;
+  message.updatedAt = now();
+  activeSession().updatedAt = now();
+  saveSessions();
+  renderMessages();
+}
+
+function finishAssistantMessage(text) {
+  const message = pendingAssistant();
+  if (!message) return;
+  message.content = text;
+  message.done = true;
+  message.updatedAt = now();
+  activeSession().updatedAt = now();
+  state.pendingAssistantId = null;
+  saveSessions();
+  renderMessages();
+}
+
+function addTrace(kind, title, detail, extras = [], sources = []) {
+  const message = pendingAssistant();
+  if (!message) return;
+  message.trace ||= [];
+  message.trace.push({ kind, title, detail, extras, sources, at: now() });
+  saveSessions();
+  renderMessages();
+}
+
+async function readAttachments(files) {
+  const next = [];
+  for (const file of files) {
+    const isText = file.type.startsWith("text/") || /\.(txt|md|csv|json|xml|html|js|ts|py|java|c|cpp|h|css)$/i.test(file.name);
+    let text = "";
+    if (isText) text = await file.text();
+    next.push({ name: file.name, type: file.type || "unknown", size: file.size, text: text.slice(0, 12000) });
+  }
+  state.attachments = next;
+  renderAttachmentList();
+}
+
+function renderAttachmentList() {
+  const list = $("#attachmentList");
+  list.innerHTML = "";
+  for (const file of state.attachments) {
+    const chip = document.createElement("span");
+    chip.textContent = file.name;
+    list.appendChild(chip);
+  }
+}
+
+function setRunning(value) {
+  state.running = value;
+  $("#runButton").disabled = value;
+  $("#runButton").textContent = value ? "研究中..." : "发送";
+}
+
+async function parseSse(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const chunks = buffer.split("\n\n");
+    buffer = chunks.pop() || "";
+    for (const chunk of chunks) {
+      const event = chunk.match(/^event: (.+)$/m)?.[1];
+      const raw = chunk.match(/^data: (.+)$/m)?.[1];
+      if (!event || !raw) continue;
+      handleResearchEvent(event, JSON.parse(raw));
+    }
+  }
+}
+
+function handleResearchEvent(event, data) {
+  if (event === "phase") addTrace("phase", data.label, data.detail);
+  if (event === "plan") {
+    const normal = (data.queries || []).map((query) => `常规：${query}`);
+    const adversarial = (data.adversarialQueries || []).map((query) => `对抗：${query}`);
+    addTrace("plan", `第 ${data.round} 轮查询计划`, data.intent || data.queryCountReason || "", [...normal, ...adversarial]);
+    if (data.reasoningSummary || data.mustVerify?.length) {
+      addTrace(
+        "thinking",
+        `第 ${data.round} 轮检索思路`,
+        data.reasoningSummary || "",
+        (data.mustVerify || []).map((item) => `核验：${item}`)
+      );
+    }
+    updateAssistantMessage(
+      [
+        `第 ${data.round} 轮研究中`,
+        "",
+        data.reasoningSummary ? `当前思路：${data.reasoningSummary}` : "",
+        data.intent ? `本轮目标：${data.intent}` : "",
+        data.mustVerify?.length ? `重点核验：${data.mustVerify.slice(0, 3).join("；")}` : "",
+      ].filter(Boolean).join("\n")
+    );
+    return;
+  }
+  if (event === "search") {
+    addTrace("search", `第 ${data.round} 轮搜索结果`, `找到 ${data.count} 条候选结果。`, (data.results || []).map((r) => r.title || r.url));
+    return;
+  }
+  if (event === "evidence") {
+    addTrace("evidence", `第 ${data.round} 轮证据更新`, `累计保留 ${data.evidence?.length || 0} 条高相关证据。`, [], data.evidence || []);
+    return;
+  }
+  if (event === "gaps") {
+    const label = data.enough ? "证据充分" : "继续补洞";
+    const detail = data.enough ? `进入综合阶段。${data.reason || ""}` : `还需要补充：${data.reason || ""}`;
+    addTrace("gaps", label, detail, data.gaps || []);
+    if (data.reasoningSummary) {
+      addTrace("thinking", `第 ${data.round} 轮判断依据`, data.reasoningSummary, data.gaps || []);
+    }
+    updateAssistantMessage(
+      [
+        `第 ${data.round} 轮研究小结`,
+        "",
+        data.workingConclusion ? `阶段结论：${data.workingConclusion}` : "",
+        data.reasoningSummary ? `为什么这样判断：${data.reasoningSummary}` : "",
+        data.nextFocus?.length ? `下一轮准备：${data.nextFocus.slice(0, 3).join("；")}` : "",
+        data.enough ? "下一步：开始综合整理最终答案。" : "",
+      ].filter(Boolean).join("\n")
+    );
+    return;
+  }
+  if (event === "final") {
+    finishAssistantMessage(data.answer);
+    return;
+  }
+  if (event === "error") {
+    finishAssistantMessage(`出错：${data.message}`);
+  }
+}
+
+function handleEvent(event, data) {
+  if (event === "phase") addTrace("phase", data.label, data.detail);
+  if (event === "plan") {
+    const normal = (data.queries || []).map((query) => `常规：${query}`);
+    const adversarial = (data.adversarialQueries || []).map((query) => `对抗：${query}`);
+    addTrace("plan", `第 ${data.round} 轮查询计划`, data.intent || data.queryCountReason || "", [...normal, ...adversarial]);
+    updateAssistantMessage(`正在检索：第 ${data.round} 轮\n\n${[...normal, ...adversarial].join("\n")}`);
+  }
+  if (event === "search") {
+    addTrace("search", `第 ${data.round} 轮搜索结果`, `找到 ${data.count} 条候选结果。`, (data.results || []).map((r) => r.title || r.url));
+  }
+  if (event === "evidence") {
+    addTrace("evidence", `第 ${data.round} 轮证据更新`, `累计保留 ${data.evidence?.length || 0} 条高相关证据。`, [], data.evidence || []);
+  }
+  if (event === "gaps") {
+    const label = data.enough ? "证据足够" : "继续补洞";
+    const detail = data.enough ? `进入综合阶段。${data.reason || ""}` : `还需要补充：${data.reason || ""}`;
+    addTrace("gaps", label, detail, data.gaps || []);
+  }
+  if (event === "final") {
+    finishAssistantMessage(data.answer);
+  }
+  if (event === "error") {
+    finishAssistantMessage(`出错：${data.message}`);
+  }
+}
+
+async function testApi() {
+  saveConfig();
+  const status = $("#apiTestStatus");
+  status.textContent = "测试中...";
+  status.dataset.state = "pending";
+  try {
+    const response = await fetch("/api/test-llm", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ config: state.config }),
+    });
+    const data = await response.json();
+    status.textContent = data.ok ? "连接成功" : data.message || "连接失败";
+    status.dataset.state = data.ok ? "ok" : "bad";
+  } catch (error) {
+    status.textContent = error.message;
+    status.dataset.state = "bad";
+  }
+}
+
+$("#settingsButton").addEventListener("click", () => $("#settingsDialog").showModal());
+$("#saveSettings").addEventListener("click", saveConfig);
+$("#testApiButton").addEventListener("click", testApi);
+$("#newSessionButton").addEventListener("click", () => createSession(true));
+$("#composerModel").addEventListener("change", (event) => applyPreset(event.target.value));
+$("#modelPreset").addEventListener("change", (event) => applyPreset(event.target.value));
+$("#thinkingMode").addEventListener("click", () => {
+  const next = $("#thinkingMode").getAttribute("aria-pressed") !== "true";
+  $("#thinkingMode").setAttribute("aria-pressed", String(next));
+  saveConfig();
+});
+$("#attachFile").addEventListener("change", (event) => readAttachments(event.target.files));
+$("#sessionSearch").addEventListener("input", (event) => {
+  state.sessionQuery = event.target.value;
+  renderSessions();
+});
+$("#question").addEventListener("keydown", (event) => {
+  if (event.isComposing) return;
+  if (event.key !== "Enter" || event.shiftKey) return;
+  event.preventDefault();
+  if (state.running) return;
+  $("#taskForm").requestSubmit();
+});
+$("#exportSessionsButton").addEventListener("click", exportSessions);
+$("#exportActiveMarkdownButton").addEventListener("click", exportActiveSessionMarkdown);
+$("#exportActiveHtmlButton").addEventListener("click", exportActiveSessionHtml);
+$("#exportActivePdfButton").addEventListener("click", exportActiveSessionPdf);
+$("#importSessionsFile").addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  try {
+    const count = await importSessions(file);
+    if (count) window.alert(`Imported ${count} session(s).`);
+  } catch (error) {
+    window.alert(error.message || "Import failed.");
+  } finally {
+    event.target.value = "";
+  }
+});
+$("#messages").addEventListener("scroll", updateActiveQuestionMarker);
+
+$("#taskForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (state.running) return;
+  saveConfig();
+  const question = $("#question").value.trim();
+  if (!question) return;
+
+  const session = activeSession();
+  if (session.title === "新会话") session.title = titleFromQuestion(question);
+  const attachments = state.attachments;
+  session.messages.push({ id: uid(), role: "user", content: question, attachments, createdAt: now() });
+  const assistantId = uid();
+  session.messages.push({ id: assistantId, role: "assistant", content: "正在启动研究...", trace: [], createdAt: now() });
+  session.updatedAt = now();
+  state.pendingAssistantId = assistantId;
+  state.attachments = [];
+  $("#attachFile").value = "";
+  saveSessions();
+  renderAll();
+  $("#question").value = "";
+  setRunning(true);
+
+  const payload = {
+    question,
+    attachments,
+    messages: session.messages.filter((item) => item.id !== assistantId).map((item) => ({ role: item.role, content: item.content })),
+    config: {
+      ...state.config,
+      autoResearch: true,
+      maxRounds: state.config.thinkingMode ? 8 : 6,
+      minRounds: state.config.thinkingMode ? 3 : 2,
+      queriesPerRound: state.config.thinkingMode ? 6 : 5,
+      resultsPerQuery: 6,
+      pagesPerRound: state.config.thinkingMode ? 10 : 8,
+      maxTokens: state.config.maxTokens || (state.config.thinkingMode ? 8192 : 6144),
+    },
+  };
+
+  try {
+    const response = await fetch("/api/research", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    await parseSse(response);
+  } catch (error) {
+    handleResearchEvent("error", { message: error.message });
+  } finally {
+    setRunning(false);
+    saveSessions();
+    renderAll();
+  }
+});
+
+loadDefaults();
