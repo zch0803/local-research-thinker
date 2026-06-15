@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Local MiroThinker</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="history-panel">
+        <div class="section-title">
+          <h2>历史会话</h2>
+          <button id="newSessionButton" class="ghost" type="button">新建</button>
+        </div>
+        <div class="history-search">
+          <input id="sessionSearch" type="search" placeholder="搜索历史会话..." autocomplete="off" />
+        </div>
+        <div class="history-actions">
+          <button id="exportSessionsButton" class="tool-button" type="button">导出 JSON</button>
+          <label class="tool-button import-button">
+            <input id="importSessionsFile" type="file" accept="application/json,.json" />
+            <span>导入 JSON</span>
+          </label>
+        </div>
+        <div class="session-export-bar">
+          <span class="session-export-label">当前会话</span>
+          <button id="exportActiveMarkdownButton" class="mini-button" type="button">MD</button>
+          <button id="exportActiveHtmlButton" class="mini-button" type="button">HTML</button>
+          <button id="exportActivePdfButton" class="mini-button" type="button">PDF</button>
+        </div>
+        <div id="sessions" class="sessions"></div>
+      </aside>
+
+      <section class="workbench">
+        <header class="topbar">
+          <div>
+            <h1>Local MiroThinker</h1>
+            <p>自动检索、阅读、补洞、校验的本地研究工作台</p>
+          </div>
+          <button id="settingsButton" class="icon-button" title="配置" type="button">⚙</button>
+        </header>
+
+        <div class="conversation-frame">
+          <section id="messages" class="messages"></section>
+          <nav id="questionNav" class="question-nav" aria-label="问题快速定位"></nav>
+        </div>
+
+        <form id="taskForm" class="composer">
+          <div class="composer-tools">
+            <label class="compact-field">
+              模型
+              <select id="composerModel"></select>
+            </label>
+            <button id="thinkingMode" class="icon-toggle" type="button" aria-pressed="false" title="思考模式">✦</button>
+            <label class="file-button">
+              <input id="attachFile" type="file" multiple />
+              <span class="file-button-icon">+</span>
+              <span>上传文件</span>
+            </label>
+            <div id="attachmentList" class="attachment-list"></div>
+          </div>
+          <textarea id="question" placeholder="继续提问，或输入一个新的研究问题..." required></textarea>
+          <div class="composer-footer">
+            <div class="auto-note">检索过程会折叠在本轮回答下方，输入框始终停在底部。</div>
+            <button id="runButton" type="submit">发送</button>
+          </div>
+        </form>
+      </section>
+    </main>
+
+    <dialog id="settingsDialog">
+      <form method="dialog" class="settings">
+        <header>
+          <h2>模型与搜索配置</h2>
+          <button value="cancel" class="icon-button" title="关闭" type="submit">×</button>
+        </header>
+        <label>
+          预设模型
+          <select id="modelPreset"></select>
+        </label>
+        <label>Base URL <input id="llmBaseUrl" autocomplete="off" /></label>
+        <label>Model <input id="llmModel" autocomplete="off" /></label>
+        <label>API Key <input id="llmApiKey" type="password" autocomplete="off" /></label>
+        <label>
+          搜索源
+          <select id="searchProvider">
+            <option value="duckduckgo">DuckDuckGo HTML（免费，无官方额度保障）</option>
+            <option value="serper">Serper Google（需 API Key）</option>
+            <option value="tavily">Tavily（需 API Key）</option>
+          </select>
+        </label>
+        <label>Serper API Key <input id="serperApiKey" type="password" autocomplete="off" /></label>
+        <label>Tavily API Key <input id="tavilyApiKey" type="password" autocomplete="off" /></label>
+        <footer>
+          <span id="apiTestStatus" class="test-status"></span>
+          <button id="testApiButton" class="secondary" value="none" type="button">测试 API</button>
+          <button id="saveSettings" value="default" type="submit">保存</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
