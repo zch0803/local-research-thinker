@@ -4,6 +4,7 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $distRoot = Join-Path $projectRoot "dist"
 $bundleRoot = Join-Path $distRoot "LocalMiroThinker"
 $appRoot = Join-Path $bundleRoot "app"
+$vendorRoot = Join-Path $appRoot "vendor"
 $runtimeRoot = Join-Path $bundleRoot "runtime"
 $launcherSource = Join-Path $projectRoot "launcher\\LocalMiroThinkerLauncher.cs"
 $launcherExe = Join-Path $bundleRoot "LocalMiroThinkerLauncher.exe"
@@ -23,6 +24,7 @@ if (Test-Path $bundleRoot) {
 }
 
 New-Item -ItemType Directory -Path $appRoot -Force | Out-Null
+New-Item -ItemType Directory -Path $vendorRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
 
 Copy-Item -LiteralPath (Join-Path $projectRoot "server.js") -Destination $appRoot
@@ -30,6 +32,8 @@ Copy-Item -LiteralPath (Join-Path $projectRoot "package.json") -Destination $app
 Copy-Item -LiteralPath (Join-Path $projectRoot "README.md") -Destination $bundleRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot "DEPLOYMENT.md") -Destination $bundleRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot "public") -Destination $appRoot -Recurse
+Copy-Item -LiteralPath (Join-Path $projectRoot "node_modules\\html2canvas\\dist\\html2canvas.min.js") -Destination $vendorRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot "node_modules\\jspdf\\dist\\jspdf.umd.min.js") -Destination $vendorRoot
 Copy-Item -LiteralPath $bundledNode -Destination (Join-Path $runtimeRoot "node.exe")
 
 & $compiler /target:winexe /platform:x64 /nologo /out:$launcherExe /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll $launcherSource

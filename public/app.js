@@ -13,6 +13,8 @@ const state = {
   modelPresets: [],
   running: false,
   pendingAssistantId: null,
+  abortController: null,
+  stopRequested: false,
   attachments: [],
   sessionQuery: "",
   traceOpenById: {},
@@ -174,21 +176,116 @@ function exportActiveSessionHtml() {
   downloadTextFile(`${sessionSlug(session)}.html`, sessionToHtmlDocument(session), "text/html;charset=utf-8");
 }
 
-function exportActiveSessionPdf() {
+async function exportActiveSessionPdf() {
   const session = activeSession();
-  const html = sessionToHtmlDocument(session);
-  const popup = window.open("", "_blank", "noopener,noreferrer,width=960,height=720");
-  if (!popup) {
-    window.alert("Popup was blocked. Please allow popups and try again.");
-    return;
+  const exportButton = document.getElementById("exportActivePdfButton");
+  const originalText = exportButton?.textContent;
+
+  if (exportButton) {
+    exportButton.disabled = true;
+    exportButton.textContent = "生成中...";
   }
-  popup.document.open();
-  popup.document.write(html);
-  popup.document.close();
-  popup.focus();
-  popup.onload = () => {
-    popup.print();
-  };
+
+  let container = null;
+  try {
+    const html2canvasLib = window.html2canvas;
+    const jsPDFCtor = window.jspdf?.jsPDF;
+    if (!html2canvasLib) throw new Error("html2canvas 未加载。");
+    if (!jsPDFCtor) throw new Error("jsPDF 未加载。");
+
+    const parsed = new DOMParser().parseFromString(sessionToHtmlDocument(session), "text/html");
+    const exportStyles = `
+      .pdf-export-root { font-family: "Segoe UI", Arial, sans-serif; color: #1c2430; line-height: 1.65; background: #fff; }
+      .pdf-export-root h1 { font-size: 28px; margin: 0 0 24px; }
+      .pdf-export-root h2 { font-size: 18px; margin: 0 0 10px; }
+      .pdf-export-root section { margin: 0 0 24px; padding: 0 0 18px; border-bottom: 1px solid #d9e0e8; }
+      .pdf-export-root p { margin: 0 0 12px; }
+      .pdf-export-root pre { padding: 12px; background: #f8fafc; border: 1px solid #d9e0e8; border-radius: 8px; overflow: hidden; white-space: pre-wrap; }
+      .pdf-export-root code { font-family: Consolas, monospace; }
+      .pdf-export-root table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+      .pdf-export-root th, .pdf-export-root td { border: 1px solid #d9e0e8; padding: 8px 10px; text-align: left; vertical-align: top; }
+      .pdf-export-root th { background: #f5f8fb; }
+      .pdf-export-root a { color: #1967d2; text-decoration: none; }
+      .pdf-export-root .table-wrap { overflow: visible; }
+    `;
+
+    container = document.createElement("div");
+    container.className = "pdf-export-root";
+    container.style.cssText = `
+      position: absolute;
+      left: -10000px;
+      top: 0;
+      width: 794px;
+      min-height: 1123px;
+      padding: 32px;
+      background: #ffffff;
+      opacity: 1;
+      pointer-events: none;
+      z-index: 0;
+    `;
+    const style = document.createElement("style");
+    style.textContent = exportStyles;
+    container.appendChild(style);
+    container.insertAdjacentHTML("beforeend", parsed.body.innerHTML);
+    document.body.appendChild(container);
+
+    if (document.fonts?.ready) await document.fonts.ready;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+    const canvas = await html2canvasLib(container, {
+      scale: 2,
+      useCORS: true,
+      logging: false,
+      backgroundColor: "#ffffff",
+      width: container.scrollWidth,
+      height: container.scrollHeight,
+      windowWidth: Math.max(1024, container.scrollWidth),
+      windowHeight: Math.max(768, container.scrollHeight),
+    });
+
+    if (!canvas.width || !canvas.height) {
+      throw new Error("PDF 渲染画布为空。");
+    }
+
+    const pdf = new jsPDFCtor({
+      orientation: "portrait",
+      unit: "mm",
+      format: "a4",
+    });
+
+    const pageWidth = 210;
+    const pageHeight = 297;
+    const margin = 10;
+    const contentWidth = pageWidth - margin * 2;
+    const contentHeight = pageHeight - margin * 2;
+    const pageCanvasHeight = Math.floor((contentHeight * canvas.width) / contentWidth);
+
+    for (let sourceY = 0, pageIndex = 0; sourceY < canvas.height; sourceY += pageCanvasHeight, pageIndex += 1) {
+      const sliceHeight = Math.min(pageCanvasHeight, canvas.height - sourceY);
+      const pageCanvas = document.createElement("canvas");
+      pageCanvas.width = canvas.width;
+      pageCanvas.height = sliceHeight;
+      const context = pageCanvas.getContext("2d");
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
+      context.drawImage(canvas, 0, sourceY, canvas.width, sliceHeight, 0, 0, canvas.width, sliceHeight);
+
+      if (pageIndex > 0) pdf.addPage();
+      const imageHeight = (sliceHeight * contentWidth) / canvas.width;
+      pdf.addImage(pageCanvas.toDataURL("image/png"), "PNG", margin, margin, contentWidth, imageHeight);
+    }
+
+    pdf.save(`${sessionSlug(session)}.pdf`);
+  } catch (error) {
+    console.error("PDF generation error:", error);
+    window.alert(`PDF 生成失败：${error.message}`);
+  } finally {
+    container?.remove();
+    if (exportButton) {
+      exportButton.disabled = false;
+      exportButton.textContent = originalText || "PDF";
+    }
+  }
 }
 
 async function importSessions(file) {
@@ -253,6 +350,43 @@ function createSession(render = true) {
 
 function setActiveSession(id) {
   state.activeId = id;
+  saveSessions();
+  renderAll();
+}
+
+function deleteUserTurn(messageId) {
+  const session = activeSession();
+  const index = session.messages.findIndex((item) => item.id === messageId);
+  if (index < 0) return;
+  const next = [...session.messages];
+  next.splice(index, 1);
+  while (index < next.length && next[index]?.role === "assistant") {
+    delete state.traceOpenById[next[index].id];
+    next.splice(index, 1);
+  }
+  session.messages = next;
+  session.updatedAt = now();
+  saveSessions();
+  renderAll();
+}
+
+function deleteAssistantMessage(messageId) {
+  const session = activeSession();
+  session.messages = session.messages.filter((item) => item.id !== messageId);
+  delete state.traceOpenById[messageId];
+  if (state.pendingAssistantId === messageId) state.pendingAssistantId = null;
+  session.updatedAt = now();
+  saveSessions();
+  renderAll();
+}
+
+function clearAssistantTrace(messageId) {
+  const message = activeSession().messages.find((item) => item.id === messageId);
+  if (!message) return;
+  message.trace = [];
+  delete state.traceOpenById[messageId];
+  message.updatedAt = now();
+  activeSession().updatedAt = now();
   saveSessions();
   renderAll();
 }
@@ -529,6 +663,13 @@ function renderMessage(message) {
     content.textContent = message.content || "";
   }
 
+  if (message.role === "assistant" && message.id === state.pendingAssistantId && !message.done) {
+    const spinner = document.createElement("span");
+    spinner.className = "message-spinner";
+    spinner.setAttribute("aria-hidden", "true");
+    label.prepend(spinner);
+  }
+
   article.append(label, content);
   article.appendChild(renderMessageActions(message));
 
@@ -558,30 +699,33 @@ function renderMessageActions(message) {
       createMessageAction("⧉", "复制回答", async () => {
         await copyText(message.content || "");
       }),
-      createMessageAction("⇩", "导出为 Markdown", () => {
-        exportAnswerMarkdown(message);
-      })
+      createMessageAction("⇩", "导出为 Markdown", () => exportAnswerMarkdown(message)),
+      createMessageAction("⌫", "删除检索过程", () => clearAssistantTrace(message.id), !message.trace?.length),
+      createMessageAction("✕", "删除回答", () => deleteAssistantMessage(message.id))
     );
   } else {
     row.append(
       createMessageAction("⧉", "复制问题", async () => {
         await copyText(message.content || "");
       }),
-      createMessageAction("✎", "修改并回填", () => {
-        editQuestion(message);
-      })
+      createMessageAction("✎", "修改并回填", () => editQuestion(message)),
+      createMessageAction("✕", "删除问题与对应回答", () => deleteUserTurn(message.id))
     );
+  }
+  if (message.role !== "assistant") {
+    row.appendChild(createMessageAction("↻", "重新发送", () => resendQuestion(message), state.running));
   }
   return row;
 }
 
-function createMessageAction(icon, label, onClick) {
+function createMessageAction(icon, label, onClick, disabled = false) {
   const button = document.createElement("button");
   button.className = "message-action-button";
   button.type = "button";
   button.title = label;
   button.setAttribute("aria-label", label);
   button.textContent = icon;
+  button.disabled = Boolean(disabled);
   button.addEventListener("click", async () => {
     try {
       await onClick();
@@ -600,12 +744,70 @@ function editQuestion(message) {
   document.querySelector(".composer")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
+async function resendQuestion(message) {
+  if (state.running) return;
+  const question = $("#question");
+  question.value = String(message.content || "").trim();
+  state.attachments = Array.isArray(message.attachments) ? [...message.attachments] : [];
+  renderAttachmentList();
+  $("#taskForm").requestSubmit();
+}
+
 function exportAnswerMarkdown(message) {
   const session = activeSession();
   const index = Math.max(1, session.messages.filter((item) => item.role === "assistant").indexOf(message) + 1);
   const title = session.title || "session";
   const content = `# ${title}\n\n## 回答 ${index}\n\n${message.content || ""}\n`;
   downloadTextFile(`${sessionSlug(session)}-answer-${index}.md`, content, "text/markdown;charset=utf-8");
+}
+
+function renderTraceProgress(item) {
+  const progress = item.progress || {};
+  const total = Number(progress.total || 0);
+  const completed = Number(progress.completed || 0);
+  const percent = Math.max(0, Math.min(100, Number(progress.percent || 0)));
+  const wrap = document.createElement("div");
+  wrap.className = "trace-progress";
+
+  const bar = document.createElement("div");
+  bar.className = "trace-progress-bar";
+  const fill = document.createElement("span");
+  fill.style.width = `${percent}%`;
+  bar.appendChild(fill);
+
+  const meta = document.createElement("div");
+  meta.className = "trace-progress-meta";
+  meta.textContent = total ? `${completed}/${total} · ${percent}%` : `${percent}%`;
+  wrap.append(bar, meta);
+
+  if (item.readItems?.length) {
+    const details = document.createElement("details");
+    details.className = "trace-read-details";
+    const summary = document.createElement("summary");
+    summary.textContent = "查看具体页面";
+    details.appendChild(summary);
+
+    const list = document.createElement("div");
+    list.className = "trace-read-list";
+    for (const page of item.readItems) {
+      const row = document.createElement("div");
+      row.className = `trace-read-item ${page.ok ? "ok" : "failed"}`;
+      const title = page.url ? document.createElement("a") : document.createElement("span");
+      title.textContent = page.title || page.url || "候选页面";
+      if (page.url) {
+        title.href = page.url;
+        title.target = "_blank";
+        title.rel = "noreferrer";
+      }
+      const status = document.createElement("small");
+      status.textContent = page.ok ? "完成" : `跳过${page.error ? `：${page.error}` : ""}`;
+      row.append(title, status);
+      list.appendChild(row);
+    }
+    details.appendChild(list);
+    wrap.appendChild(details);
+  }
+  return wrap;
 }
 
 function renderTraceDetails(message) {
@@ -630,6 +832,7 @@ function renderTraceDetails(message) {
     const detail = document.createElement("p");
     detail.textContent = item.detail || "";
     row.append(title, detail);
+    if (item.progress) row.appendChild(renderTraceProgress(item));
     if (item.extras?.length) {
       const chips = document.createElement("div");
       chips.className = "chips";
@@ -751,6 +954,59 @@ function addTrace(kind, title, detail, extras = [], sources = []) {
   renderMessages();
 }
 
+function updateReadProgressTrace(data) {
+  const message = pendingAssistant();
+  if (!message) return;
+  message.trace ||= [];
+  let item = message.trace.find((entry) => entry.kind === "read-progress" && entry.round === data.round);
+  if (!item) {
+    item = {
+      kind: "read-progress",
+      round: data.round,
+      title: `第 ${data.round} 轮网页阅读`,
+      detail: "",
+      readItems: [],
+      progress: { completed: 0, total: Number(data.total || 0), percent: 0 },
+      at: now(),
+    };
+    message.trace.push(item);
+  }
+
+  item.readItems ||= [];
+  if (data.title || data.url || data.error) {
+    const key = data.url || data.title || `read-${item.readItems.length}`;
+    let page = item.readItems.find((entry) => entry.key === key);
+    if (!page) {
+      page = { key };
+      item.readItems.push(page);
+    }
+    Object.assign(page, {
+      title: data.title || data.url || "候选页面",
+      url: data.url || "",
+      ok: Boolean(data.ok),
+      error: data.error || "",
+      timedOut: Boolean(data.timedOut),
+    });
+  }
+
+  const total = Number(data.total || item.progress?.total || 0);
+  const completed = data.timedOut ? total : Math.min(Number(data.completed || item.progress?.completed || 0), total || Number(data.completed || 0));
+  const okCount = item.readItems.filter((entry) => entry.ok).length;
+  const failedCount = item.readItems.filter((entry) => !entry.ok).length;
+  item.progress = {
+    completed,
+    total,
+    percent: total ? Math.round((completed / total) * 100) : 0,
+    timedOut: Boolean(data.timedOut),
+  };
+  item.detail = data.timedOut
+    ? `本轮阅读达到安全时间，已处理 ${completed}/${total} 个页面，成功 ${okCount} 个，跳过 ${failedCount} 个。`
+    : `已处理 ${completed}/${total} 个页面，成功 ${okCount} 个，跳过 ${failedCount} 个。`;
+  item.updatedAt = now();
+  saveSessions();
+  renderMessages();
+}
+
 async function readAttachments(files) {
   const next = [];
   for (const file of files) {
@@ -775,8 +1031,26 @@ function renderAttachmentList() {
 
 function setRunning(value) {
   state.running = value;
-  $("#runButton").disabled = value;
-  $("#runButton").textContent = value ? "研究中..." : "发送";
+  $("#runButton").disabled = false;
+  $("#runButton").classList.toggle("running", value);
+  $("#runButton").textContent = value ? "停止" : "发送";
+}
+
+function stopCurrentResearch() {
+  if (!state.running) return;
+  state.stopRequested = true;
+  state.abortController?.abort();
+  const message = pendingAssistant();
+  if (message && !message.done) {
+    message.content = "已手动停止当前研究。可以切换模型后重新发送。";
+    message.done = true;
+    message.updatedAt = now();
+    activeSession().updatedAt = now();
+    state.pendingAssistantId = null;
+    saveSessions();
+    renderMessages();
+  }
+  setRunning(false);
 }
 
 async function parseSse(response) {
@@ -799,7 +1073,11 @@ async function parseSse(response) {
 }
 
 function handleResearchEvent(event, data) {
-  if (event === "phase") addTrace("phase", data.label, data.detail);
+  if (event === "phase") {
+    addTrace("phase", data.label, data.detail);
+    updateAssistantMessage(`${data.label}\n\n${data.detail || ""}`.trim());
+    return;
+  }
   if (event === "plan") {
     const normal = (data.queries || []).map((query) => `常规：${query}`);
     const adversarial = (data.adversarialQueries || []).map((query) => `对抗：${query}`);
@@ -827,8 +1105,20 @@ function handleResearchEvent(event, data) {
     addTrace("search", `第 ${data.round} 轮搜索结果`, `找到 ${data.count} 条候选结果。`, (data.results || []).map((r) => r.title || r.url));
     return;
   }
+  if (event === "read-progress") {
+    updateReadProgressTrace(data);
+    const completed = data.timedOut ? data.total : data.completed;
+    const status = data.timedOut
+      ? `本轮阅读达到安全时间，已处理 ${completed}/${data.total} 个候选页面。`
+      : `阅读进度：${completed}/${data.total} 个候选页面。`;
+    updateAssistantMessage([`第 ${data.round} 轮阅读`, "", status].filter(Boolean).join("\n"));
+    return;
+  }
   if (event === "evidence") {
-    addTrace("evidence", `第 ${data.round} 轮证据更新`, `累计保留 ${data.evidence?.length || 0} 条高相关证据。`, [], data.evidence || []);
+    const stats = data.pageStats
+      ? `本轮尝试 ${data.pageStats.attempted} 页，成功 ${data.pageStats.succeeded} 页，失败 ${data.pageStats.failed} 页。`
+      : "";
+    addTrace("evidence", `第 ${data.round} 轮证据更新`, `累计保留 ${data.evidence?.length || 0} 条高相关证据。${stats}`, [], data.evidence || []);
     return;
   }
   if (event === "gaps") {
@@ -929,6 +1219,11 @@ $("#question").addEventListener("keydown", (event) => {
   if (state.running) return;
   $("#taskForm").requestSubmit();
 });
+$("#runButton").addEventListener("click", (event) => {
+  if (!state.running) return;
+  event.preventDefault();
+  stopCurrentResearch();
+});
 $("#exportSessionsButton").addEventListener("click", exportSessions);
 $("#exportActiveMarkdownButton").addEventListener("click", exportActiveSessionMarkdown);
 $("#exportActiveHtmlButton").addEventListener("click", exportActiveSessionHtml);
@@ -966,6 +1261,9 @@ $("#taskForm").addEventListener("submit", async (event) => {
   saveSessions();
   renderAll();
   $("#question").value = "";
+  const controller = new AbortController();
+  state.abortController = controller;
+  state.stopRequested = false;
   setRunning(true);
 
   const payload = {
@@ -989,12 +1287,21 @@ $("#taskForm").addEventListener("submit", async (event) => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
+      signal: controller.signal,
     });
     await parseSse(response);
   } catch (error) {
-    handleResearchEvent("error", { message: error.message });
+    if (error.name === "AbortError" || state.stopRequested) {
+      if (state.pendingAssistantId) finishAssistantMessage("已手动停止当前研究。可以切换模型后重新发送。");
+    } else {
+      handleResearchEvent("error", { message: error.message });
+    }
   } finally {
-    setRunning(false);
+    if (state.abortController === controller) {
+      state.abortController = null;
+      state.stopRequested = false;
+      setRunning(false);
+    }
     saveSessions();
     renderAll();
   }

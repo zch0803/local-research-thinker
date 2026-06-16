@@ -14,6 +14,17 @@ const MIME = {
   ".json": "application/json; charset=utf-8",
 };
 
+const VENDOR_FILES = {
+  "/vendor/html2canvas.min.js": [
+    path.join(__dirname, "vendor", "html2canvas.min.js"),
+    path.join(__dirname, "node_modules", "html2canvas", "dist", "html2canvas.min.js"),
+  ],
+  "/vendor/jspdf.umd.min.js": [
+    path.join(__dirname, "vendor", "jspdf.umd.min.js"),
+    path.join(__dirname, "node_modules", "jspdf", "dist", "jspdf.umd.min.js"),
+  ],
+};
+
 const DEFAULTS = {
   llmBaseUrl: process.env.LLM_BASE_URL || "https://api.deepseek.com/v1",
   llmModel: process.env.LLM_MODEL || "deepseek-v4-flash",
@@ -39,6 +50,18 @@ const DEFAULTS = {
     { label: "Custom", baseUrl: "", model: "" },
   ],
 };
+
+const MAX_PAGE_BYTES = 1_500_000;
+const MAX_PAGE_CHARS = 120_000;
+const PAGE_READ_TIMEOUT_MS = 14_000;
+const PAGE_READ_CONCURRENCY = 3;
+const ROUND_READ_TIMEOUT_MS = 38_000;
+const SEARCH_TIMEOUT_MS = 18_000;
+const LLM_TIMEOUT_MS = 90_000;
+const LLM_PLAN_TIMEOUT_MS = 55_000;
+const LLM_JUDGMENT_TIMEOUT_MS = 25_000;
+const LLM_FINAL_TIMEOUT_MS = 120_000;
+const LLM_MAX_RESPONSE_CHARS = 2_000_000;
 
 const STOP_WORDS = new Set(
   "the a an and or of to in for on with by from about into over after before is are was were be been being as at that this these those it its their his her our your you we they i what which who whom when where why how can could should would may might 的 了 和 是 在 对 与 及 或 一个 一种 哪些 什么 如何 为什么 请 帮 我 这个 那个".split(/\s+/)
@@ -109,6 +132,27 @@ function stripHtml(html) {
     .trim();
 }
 
+function abortError(message = "Research aborted.") {
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw abortError();
+}
+
+function mergeSignals(signals = []) {
+  const active = signals.filter(Boolean);
+  if (!active.length) return undefined;
+  if (active.some((signal) => signal.aborted)) return AbortSignal.abort();
+  if (AbortSignal.any) return AbortSignal.any(active);
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  for (const signal of active) signal.addEventListener("abort", abort, { once: true });
+  return controller.signal;
+}
+
 function titleFromHtml(html, fallback) {
   const match = String(html).match(/<title[^>]*>([\s\S]*?)<\/title>/i);
   return stripHtml(match?.[1] || fallback || "Untitled").slice(0, 160);
@@ -117,21 +161,139 @@ function titleFromHtml(html, fallback) {
 async function fetchWithTimeout(url, options = {}, timeoutMs = 18000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const signal = mergeSignals([controller.signal, options.signal]);
   try {
     return await fetch(url, {
       ...options,
-      signal: controller.signal,
+      signal,
       headers: {
         "user-agent": "Mozilla/5.0 (compatible; LocalMiroThinker/0.2; +http://localhost)",
         ...(options.headers || {}),
       },
     });
+  } catch (error) {
+    if (options.signal?.aborted) throw abortError();
+    throw error;
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function callLLM(config, messages, schemaHint = "") {
+async function withTimeout(task, timeoutMs, label = "Operation") {
+  let timer = null;
+  try {
+    return await Promise.race([
+      task(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function fetchTextWithTimeout(url, options = {}, timeoutMs = 18000, maxChars = MAX_PAGE_CHARS, readOptions = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const signal = mergeSignals([controller.signal, options.signal, readOptions.signal]);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal,
+      headers: {
+        "user-agent": "Mozilla/5.0 (compatible; LocalMiroThinker/0.2; +http://localhost)",
+        ...(options.headers || {}),
+      },
+    });
+    const contentLength = Number(response.headers.get("content-length") || 0);
+    const contentType = response.headers.get("content-type") || "";
+    if (readOptions.htmlOnly && contentType && !/text\/html|application\/xhtml\+xml/i.test(contentType)) {
+      return { response, text: "", skipped: `Unsupported content type: ${contentType}` };
+    }
+    if (contentLength > MAX_PAGE_BYTES) {
+      return { response, text: "", skipped: `Content too large: ${contentLength}` };
+    }
+    const text = await readResponseText(response, controller, maxChars);
+    return { response, text };
+  } catch (error) {
+    if (options.signal?.aborted || readOptions.signal?.aborted) throw abortError();
+    if (error?.name === "AbortError") {
+      throw new Error(`Fetch timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+  }
+}
+
+async function readResponseText(response, controller, maxChars = MAX_PAGE_CHARS) {
+  if (!response.body?.getReader) {
+    const text = await response.text();
+    return text.slice(0, maxChars);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    if (chunk.value) {
+      text += decoder.decode(chunk.value, { stream: true });
+      if (text.length >= maxChars) {
+        try {
+          await reader.cancel();
+        } catch {}
+        controller.abort();
+        return text.slice(0, maxChars);
+      }
+    }
+  }
+  text += decoder.decode();
+  return text.slice(0, maxChars);
+}
+
+async function fetchRawWithTimeout(url, options = {}, timeoutMs = LLM_TIMEOUT_MS, maxChars = LLM_MAX_RESPONSE_CHARS) {
+  const controller = new AbortController();
+  let timedOut = false;
+  let timer = null;
+  const signal = mergeSignals([controller.signal, options.signal]);
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+      reject(new Error(`Request timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+  try {
+    const response = await Promise.race([
+      fetch(url, {
+        ...options,
+        signal,
+        headers: {
+          "user-agent": "Mozilla/5.0 (compatible; LocalMiroThinker/0.2; +http://localhost)",
+          ...(options.headers || {}),
+        },
+      }),
+      timeout,
+    ]);
+    const text = await Promise.race([readResponseText(response, controller, maxChars), timeout]);
+    return { response, text };
+  } catch (error) {
+    if (options.signal?.aborted) throw abortError();
+    if (timedOut) throw new Error(`Request timed out after ${timeoutMs}ms`);
+    if (error?.name === "AbortError") {
+      throw new Error(`Request timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
+    controller.abort();
+  }
+}
+
+async function callLLM(config, messages, schemaHint = "", options = {}) {
   if (!config.llmApiKey) return "";
   const url = `${config.llmBaseUrl.replace(/\/$/, "")}/chat/completions`;
   const body = {
@@ -142,7 +304,7 @@ async function callLLM(config, messages, schemaHint = "") {
     temperature: Number(config.temperature ?? 0.2),
     max_tokens: Number(config.maxTokens ?? DEFAULTS.maxTokens),
   };
-  const response = await fetchWithTimeout(
+  const { response, text } = await fetchRawWithTimeout(
     url,
     {
       method: "POST",
@@ -151,14 +313,23 @@ async function callLLM(config, messages, schemaHint = "") {
         authorization: `Bearer ${config.llmApiKey}`,
       },
       body: JSON.stringify(body),
+      signal: options.signal,
     },
-    70000
+    Number(options.timeoutMs || config.llmTimeoutMs || LLM_TIMEOUT_MS),
+    Number(options.maxResponseChars || LLM_MAX_RESPONSE_CHARS)
   );
   if (!response.ok) {
-    const text = await response.text();
     throw new Error(`LLM ${response.status}: ${text.slice(0, 500)}`);
   }
-  const json = await response.json();
+  let json = null;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error(`LLM returned invalid JSON: ${text.slice(0, 300)}`);
+  }
+  if (json.error?.message) {
+    throw new Error(`LLM error: ${json.error.message}`);
+  }
   return json.choices?.[0]?.message?.content || "";
 }
 
@@ -166,7 +337,9 @@ async function testLLM(config) {
   if (!config.llmApiKey) return { ok: false, message: "API Key is empty." };
   const content = await callLLM(
     { ...DEFAULTS, ...config, maxTokens: 32 },
-    [{ role: "user", content: "Reply with OK only." }]
+    [{ role: "user", content: "Reply with OK only." }],
+    "",
+    { timeoutMs: 30_000 }
   );
   return { ok: /ok/i.test(content), message: content || "No content returned." };
 }
@@ -255,7 +428,7 @@ function heuristicAdversarialQueries(question, gaps = [], context = "") {
   return uniqueBy(queries, (x) => x.toLowerCase()).slice(0, 3);
 }
 
-async function planQueries(config, question, round, evidence, gaps, messages) {
+async function planQueries(config, question, round, evidence, gaps, messages, signal) {
   const context = recentContext(messages);
   const fallback = heuristicQueries(question, round, gaps, context);
   const adversarialFallback = heuristicAdversarialQueries(question, gaps, context);
@@ -280,7 +453,8 @@ async function planQueries(config, question, round, evidence, gaps, messages) {
             ),
         },
       ],
-      'Schema: {"intent":"short intent","queries":["query"],"adversarial_queries":["counter query"],"must_verify":["claim type"],"query_count_reason":"why this many","reasoning_summary":"brief visible planning rationale"}'
+      'Schema: {"intent":"short intent","queries":["query"],"adversarial_queries":["counter query"],"must_verify":["claim type"],"query_count_reason":"why this many","reasoning_summary":"brief visible planning rationale"}',
+      { timeoutMs: LLM_PLAN_TIMEOUT_MS, signal }
     );
     const parsed = parseJsonLoose(text, {});
     const queries = Array.isArray(parsed.queries) ? parsed.queries : [];
@@ -293,15 +467,15 @@ async function planQueries(config, question, round, evidence, gaps, messages) {
       queryCountReason: parsed.query_count_reason || "",
       reasoningSummary: parsed.reasoning_summary || "",
     };
-  } catch {
+  } catch (error) {
+    if (error?.name === "AbortError") throw error;
     return { intent: "Research the question with external evidence.", queries: fallback, adversarialQueries: adversarialFallback, mustVerify: [] };
   }
 }
 
-async function searchDuckDuckGo(query, limit) {
+async function searchDuckDuckGo(query, limit, signal) {
   const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-  const response = await fetchWithTimeout(url);
-  const html = await response.text();
+  const { text: html } = await fetchTextWithTimeout(url, { signal }, 18000);
   const blocks = html.split(/result__body/g).slice(1);
   return blocks
     .map((block) => {
@@ -320,16 +494,16 @@ async function searchDuckDuckGo(query, limit) {
     .slice(0, limit);
 }
 
-async function searchPubMed(query, limit) {
+async function searchPubMed(query, limit, signal) {
   const term = query.replace(/\bsite:pubmed\.ncbi\.nlm\.nih\.gov\b/gi, "").replace(/\bpubmed\b/gi, "").trim() || query;
   const searchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&retmode=json&retmax=${limit}&term=${encodeURIComponent(term)}`;
-  const searchRes = await fetchWithTimeout(searchUrl);
-  const searchJson = await searchRes.json();
+  const { text: searchText } = await fetchRawWithTimeout(searchUrl, { signal }, SEARCH_TIMEOUT_MS);
+  const searchJson = JSON.parse(searchText);
   const ids = searchJson.esearchresult?.idlist || [];
   if (!ids.length) return [];
   const summaryUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&retmode=json&id=${ids.join(",")}`;
-  const summaryRes = await fetchWithTimeout(summaryUrl);
-  const summaryJson = await summaryRes.json();
+  const { text: summaryText } = await fetchRawWithTimeout(summaryUrl, { signal }, SEARCH_TIMEOUT_MS);
+  const summaryJson = JSON.parse(summaryText);
   return ids.map((id) => {
     const item = summaryJson.result?.[id] || {};
     return {
@@ -342,14 +516,15 @@ async function searchPubMed(query, limit) {
   });
 }
 
-async function searchSerper(config, query, limit) {
-  const response = await fetchWithTimeout("https://google.serper.dev/search", {
+async function searchSerper(config, query, limit, signal) {
+  const { response, text } = await fetchRawWithTimeout("https://google.serper.dev/search", {
     method: "POST",
+    signal,
     headers: { "content-type": "application/json", "x-api-key": config.serperApiKey },
     body: JSON.stringify({ q: query, num: limit }),
-  });
+  }, SEARCH_TIMEOUT_MS);
   if (!response.ok) throw new Error(`Serper ${response.status}`);
-  const json = await response.json();
+  const json = JSON.parse(text);
   return (json.organic || []).slice(0, limit).map((item) => ({
     title: item.title,
     url: item.link,
@@ -358,14 +533,15 @@ async function searchSerper(config, query, limit) {
   }));
 }
 
-async function searchTavily(config, query, limit) {
-  const response = await fetchWithTimeout("https://api.tavily.com/search", {
+async function searchTavily(config, query, limit, signal) {
+  const { response, text } = await fetchRawWithTimeout("https://api.tavily.com/search", {
     method: "POST",
+    signal,
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ api_key: config.tavilyApiKey, query, max_results: limit, include_answer: false }),
-  });
+  }, SEARCH_TIMEOUT_MS);
   if (!response.ok) throw new Error(`Tavily ${response.status}`);
-  const json = await response.json();
+  const json = JSON.parse(text);
   return (json.results || []).slice(0, limit).map((item) => ({
     title: item.title,
     url: item.url,
@@ -374,24 +550,31 @@ async function searchTavily(config, query, limit) {
   }));
 }
 
-async function runSearch(config, query, limit) {
+async function runSearch(config, query, limit, signal) {
+  throwIfAborted(signal);
   const jobs = [];
-  if (detectAcademicIntent(query)) jobs.push(searchPubMed(query, Math.min(limit, 5)).catch(() => []));
-  if (config.searchProvider === "serper" && config.serperApiKey) jobs.push(searchSerper(config, query, limit));
-  else if (config.searchProvider === "tavily" && config.tavilyApiKey) jobs.push(searchTavily(config, query, limit));
-  else jobs.push(searchDuckDuckGo(query, limit));
+  if (detectAcademicIntent(query)) jobs.push(searchPubMed(query, Math.min(limit, 5), signal).catch((error) => {
+    if (error?.name === "AbortError") throw error;
+    return [];
+  }));
+  if (config.searchProvider === "serper" && config.serperApiKey) jobs.push(searchSerper(config, query, limit, signal));
+  else if (config.searchProvider === "tavily" && config.tavilyApiKey) jobs.push(searchTavily(config, query, limit, signal));
+  else jobs.push(searchDuckDuckGo(query, limit, signal));
   const groups = await Promise.all(jobs);
+  throwIfAborted(signal);
   return uniqueBy(groups.flat(), (r) => r.url);
 }
 
-async function readPage(result, question) {
+async function readPage(result, question, timeoutMs = PAGE_READ_TIMEOUT_MS, signal) {
   try {
-    const response = await fetchWithTimeout(result.url, {}, 18000);
+    throwIfAborted(signal);
+    const { response, text: html, skipped } = await fetchTextWithTimeout(result.url, {}, timeoutMs, MAX_PAGE_CHARS, { htmlOnly: true, signal });
+    throwIfAborted(signal);
+    if (skipped) return { ...result, ok: false, text: result.snippet || "", error: skipped };
     const contentType = response.headers.get("content-type") || "";
-    if (!response.ok || !contentType.includes("text/html")) {
+    if (!response.ok || (contentType && !/text\/html|application\/xhtml\+xml/i.test(contentType))) {
       return { ...result, ok: false, text: result.snippet || "", error: `HTTP ${response.status}` };
     }
-    const html = await response.text();
     const text = stripHtml(html).slice(0, 22000);
     return {
       ...result,
@@ -401,8 +584,111 @@ async function readPage(result, question) {
       score: scoreText(question, `${result.title} ${result.snippet} ${text}`),
     };
   } catch (error) {
+    if (error?.name === "AbortError") throw error;
     return { ...result, ok: false, text: result.snippet || "", error: error.message };
   }
+}
+
+async function readPagesWithProgress(results, question, emit, round, signal) {
+  const total = results.length;
+  if (!total) return [];
+  throwIfAborted(signal);
+  const pages = new Array(total);
+  const startedAt = Date.now();
+  const deadline = startedAt + ROUND_READ_TIMEOUT_MS;
+  const concurrency = Math.min(PAGE_READ_CONCURRENCY, total);
+  let cursor = 0;
+  let completed = 0;
+  let timedOut = false;
+
+  const markProgress = (index, page) => {
+    completed += 1;
+    const elapsedMs = Date.now() - startedAt;
+    emit("read-progress", {
+      round,
+      completed,
+      total,
+      elapsedMs,
+      ok: Boolean(page?.ok),
+      title: results[index]?.title || results[index]?.url || "",
+      url: results[index]?.url || "",
+      error: page?.ok ? "" : page?.error || "Page read failed.",
+    });
+  };
+
+  const worker = async () => {
+    try {
+      while (!timedOut && cursor < total) {
+        throwIfAborted(signal);
+        const index = cursor;
+        cursor += 1;
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) {
+          timedOut = true;
+          break;
+        }
+        const timeoutMs = Math.max(4_000, Math.min(PAGE_READ_TIMEOUT_MS, remainingMs));
+        try {
+          const page = await readPage(results[index], question, timeoutMs, signal);
+          throwIfAborted(signal);
+          pages[index] = page;
+          if (!timedOut) markProgress(index, page);
+        } catch (error) {
+          if (error?.name === "AbortError") throw error;
+          pages[index] = {
+            ...results[index],
+            ok: false,
+            text: results[index]?.snippet || "",
+            error: `Read failed: ${error.message}`,
+          };
+          if (!timedOut) markProgress(index, pages[index]);
+        }
+      }
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      throw error;
+    }
+  };
+
+  let roundTimer = null;
+  await Promise.race([
+    Promise.all(Array.from({ length: concurrency }, () => worker())),
+    new Promise((resolve) => {
+      roundTimer = setTimeout(() => {
+        timedOut = true;
+        resolve();
+      }, ROUND_READ_TIMEOUT_MS);
+    }),
+  ]);
+  if (roundTimer) clearTimeout(roundTimer);
+  throwIfAborted(signal);
+
+  const timeoutFallbacks = [];
+  for (let index = 0; index < total; index += 1) {
+    if (pages[index]) continue;
+    pages[index] = {
+      ...results[index],
+      ok: false,
+      text: results[index]?.snippet || "",
+      error: "Round read timeout; skipped unfinished page.",
+    };
+    timeoutFallbacks.push(results[index]?.title || results[index]?.url || "");
+  }
+
+  if (timeoutFallbacks.length) {
+    emit("read-progress", {
+      round,
+      completed,
+      total,
+      elapsedMs: Date.now() - startedAt,
+      ok: false,
+      timedOut: true,
+      title: "",
+      url: "",
+      error: `Skipped ${timeoutFallbacks.length} unfinished page(s) after the round timeout.`,
+    });
+  }
+  return pages;
 }
 
 function pickPassages(question, page) {
@@ -417,30 +703,91 @@ function pickPassages(question, page) {
   return ranked.length ? ranked.map((p) => p.text) : [String(page.snippet || page.text || "").slice(0, 500)];
 }
 
-async function analyzeGaps(config, question, evidence, round, messages) {
-  const compact = evidence.slice(0, 16).map((e, i) => ({
-    id: i + 1,
-    title: e.title,
-    url: e.url,
-    passages: e.passages,
+function compactEvidenceForModel(evidence = [], options = {}) {
+  const maxItems = Number(options.maxItems || 10);
+  const maxPassages = Number(options.maxPassages || 2);
+  const maxPassageChars = Number(options.maxPassageChars || 280);
+  const maxTitleChars = Number(options.maxTitleChars || 160);
+  return evidence.slice(0, maxItems).map((item, index) => ({
+    id: item.id || index + 1,
+    title: String(item.title || "").slice(0, maxTitleChars),
+    url: item.url,
+    query: item.query,
+    passages: (item.passages || []).slice(0, maxPassages).map((passage) => String(passage || "").slice(0, maxPassageChars)),
   }));
+}
+
+function compactTraceForModel(trace = [], options = {}) {
+  const maxRounds = Number(options.maxRounds || 8);
+  return trace.slice(-maxRounds).map((item) => ({
+    round: item.round,
+    intent: item.intent,
+    queries: (item.queries || []).slice(0, 4),
+    adversarialQueries: (item.adversarialQueries || []).slice(0, 3),
+    mustVerify: (item.mustVerify || []).slice(0, 4),
+  }));
+}
+
+function fallbackGapCheck(config, evidence, round, reason = "") {
+  const minRounds = Number(config.minRounds || DEFAULTS.minRounds);
+  const maxRounds = Number(config.maxRounds || DEFAULTS.maxRounds);
+  const enough = round >= maxRounds || (round >= minRounds && evidence.length >= 12);
+  const gaps = enough ? [] : ["more direct evidence", "primary source", "conflicting evidence", "updated source"];
+  return {
+    enough,
+    confidence: enough ? 0.55 : 0.25,
+    gaps,
+    nextFocus: gaps,
+    reason: reason || (enough ? "Reached safety limit; synthesizing with available evidence." : "Judgment model did not return in time; continuing retrieval with conservative gaps."),
+    reasoningSummary: reason || (enough ? "Reached the configured search limit." : "The judgment step was degraded to a conservative heuristic so the task can continue."),
+    workingConclusion: "",
+    fallback: true,
+  };
+}
+
+function fallbackAnswerFromEvidence(error, evidence = []) {
+  const cited = compactEvidenceForModel(evidence, { maxItems: 12, maxPassages: 2, maxPassageChars: 360 });
+  return [
+    `模型综合输出超时或失败：${error.message}`,
+    "",
+    "下面先返回已检索到的证据摘要，避免本次研究结果丢失：",
+    "",
+    ...cited.map((item) => [
+      `[${item.id}] ${item.title}`,
+      item.url,
+      ...(item.passages || []),
+    ].join("\n")),
+  ].join("\n");
+}
+
+async function analyzeGaps(config, question, evidence, round, messages, signal) {
+  const compact = compactEvidenceForModel(evidence, { maxItems: 12, maxPassages: 2, maxPassageChars: 260 });
   const fallbackEnough = round >= Number(config.maxRounds || DEFAULTS.maxRounds) || evidence.length >= 10;
   if (!config.llmApiKey) {
     return { enough: fallbackEnough && round >= Number(config.minRounds || DEFAULTS.minRounds), gaps: fallbackEnough ? [] : ["more direct evidence", "primary source", "conflicting evidence"], nextFocus: [] };
   }
-  const text = await callLLM(
-    config,
-    [
-      {
-        role: "user",
-        content:
-          `Decide whether the current evidence is sufficient to answer the user's latest question. Be strict: continue if the answer needs exact names, dates, numbers, primary literature, or if evidence is weak. Stop only when a reliable answer can be written. Thinking mode: ${config.thinkingMode ? "deep verification, higher bar to stop" : "balanced"}.\n` +
-          JSON.stringify({ question, conversation_context: recentContext(messages), round, evidence: compact }, null, 2),
-      },
-    ],
-    'Schema: {"enough":false,"confidence":0.0,"gaps":["short gap"],"next_focus":["search phrase"],"reason":"short reason","reasoning_summary":"brief visible judgment summary","working_conclusion":"tentative conclusion so far"}'
-  );
-  const parsed = parseJsonLoose(text, {});
+  let parsed = {};
+  try {
+    throwIfAborted(signal);
+    const text = await callLLM(
+      config,
+      [
+        {
+          role: "user",
+          content:
+            `Decide whether the current evidence is sufficient to answer the user's latest question. Be strict: continue if the answer needs exact names, dates, numbers, primary literature, or if evidence is weak. Stop only when a reliable answer can be written. Thinking mode: ${config.thinkingMode ? "deep verification, higher bar to stop" : "balanced"}.\n` +
+            JSON.stringify({ question, conversation_context: recentContext(messages), round, evidence: compact }, null, 2),
+        },
+      ],
+      'Schema: {"enough":false,"confidence":0.0,"gaps":["short gap"],"next_focus":["search phrase"],"reason":"short reason","reasoning_summary":"brief visible judgment summary","working_conclusion":"tentative conclusion so far"}',
+      { timeoutMs: LLM_JUDGMENT_TIMEOUT_MS, signal }
+    );
+    throwIfAborted(signal);
+    parsed = parseJsonLoose(text, {});
+  } catch (error) {
+    if (error?.name === "AbortError") throw error;
+    return fallbackGapCheck(config, evidence, round, `Judgment step timed out or failed: ${error.message}`);
+  }
   const enoughByModel = Boolean(parsed.enough) && Number(parsed.confidence || 0) >= 0.65;
   return {
     enough: enoughByModel && round >= Number(config.minRounds || DEFAULTS.minRounds),
@@ -453,14 +800,9 @@ async function analyzeGaps(config, question, evidence, round, messages) {
   };
 }
 
-async function synthesize(config, question, evidence, trace, messages) {
-  const cited = evidence.slice(0, 18).map((e, i) => ({
-    id: i + 1,
-    title: e.title,
-    url: e.url,
-    query: e.query,
-    passages: e.passages,
-  }));
+async function synthesize(config, question, evidence, trace, messages, signal) {
+  const cited = compactEvidenceForModel(evidence, { maxItems: config.thinkingMode ? 12 : 10, maxPassages: 2, maxPassageChars: config.thinkingMode ? 320 : 260 });
+  const compactTrace = compactTraceForModel(trace, { maxRounds: config.thinkingMode ? 8 : 6 });
   if (!config.llmApiKey) {
     return [
       "未配置大模型 API，所以这里只返回检索证据摘要。",
@@ -468,6 +810,7 @@ async function synthesize(config, question, evidence, trace, messages) {
       ...cited.map((e) => `[${e.id}] ${e.title}\n${e.url}\n${e.passages?.[0] || ""}`),
     ].join("\n");
   }
+  throwIfAborted(signal);
   return callLLM({ ...config, maxTokens: Number(config.maxTokens || DEFAULTS.maxTokens) }, [
     {
       role: "system",
@@ -481,15 +824,15 @@ async function synthesize(config, question, evidence, trace, messages) {
         "\n\nLatest question:\n" +
         question +
         "\n\nRetrieval trace:\n" +
-        JSON.stringify(trace, null, 2) +
+        JSON.stringify(compactTrace, null, 2) +
         "\n\nEvidence:\n" +
         JSON.stringify(cited, null, 2) +
         "\n\nWrite the final answer with citations and a short verification note.",
     },
-  ]);
+  ], "", { timeoutMs: LLM_FINAL_TIMEOUT_MS, signal });
 }
 
-async function research(payload, emit) {
+async function research(payload, emit, signal) {
   const config = { ...DEFAULTS, ...(payload.config || {}) };
   const rawQuestion = String(payload.question || "").trim();
   const attachmentsText = attachmentContext(payload.attachments);
@@ -504,12 +847,14 @@ async function research(payload, emit) {
 
   emit("phase", { label: "问题增强与自动规划", detail: "系统会根据证据缺口自动决定是否继续检索，最多到安全上限。" });
   for (let round = 1; round <= maxRounds; round++) {
-    const plan = await planQueries(config, question, round, evidence, gaps, messages);
+    throwIfAborted(signal);
+    const plan = await planQueries(config, question, round, evidence, gaps, messages, signal);
     trace.push({ round, intent: plan.intent, queries: plan.queries, adversarialQueries: plan.adversarialQueries, mustVerify: plan.mustVerify });
     emit("plan", { round, ...plan });
 
     const allQueries = uniqueBy([...(plan.queries || []), ...(plan.adversarialQueries || [])], (query) => String(query).toLowerCase());
-    const searchGroups = await Promise.allSettled(allQueries.map((query) => runSearch(config, query, Number(config.resultsPerQuery || DEFAULTS.resultsPerQuery))));
+    const searchGroups = await Promise.allSettled(allQueries.map((query) => runSearch(config, query, Number(config.resultsPerQuery || DEFAULTS.resultsPerQuery), signal)));
+    throwIfAborted(signal);
     const results = uniqueBy(searchGroups.flatMap((item) => (item.status === "fulfilled" ? item.value : [])), (r) => r.url?.replace(/#.*$/, ""));
     emit("search", { round, count: results.length, results: results.slice(0, 14) });
 
@@ -519,7 +864,8 @@ async function research(payload, emit) {
       .slice(0, Number(config.pagesPerRound || DEFAULTS.pagesPerRound));
 
     emit("phase", { label: `第 ${round} 轮阅读`, detail: `读取 ${rankedResults.length} 个候选页面并抽取相关段落。` });
-    const pages = await Promise.all(rankedResults.map((r) => readPage(r, question)));
+    const pages = await readPagesWithProgress(rankedResults, question, emit, round, signal);
+    throwIfAborted(signal);
     const newEvidence = pages
       .filter((p) => p.ok && (p.text || p.snippet))
       .map((p) => ({ ...p, passages: pickPassages(question, p) }))
@@ -528,9 +874,19 @@ async function research(payload, emit) {
     evidence = uniqueBy([...evidence, ...newEvidence], (e) => e.url?.replace(/#.*$/, ""))
       .sort((a, b) => (b.score || 0) - (a.score || 0))
       .slice(0, 40);
-    emit("evidence", { round, evidence: evidence.slice(0, 14) });
+    emit("evidence", {
+      round,
+      evidence: evidence.slice(0, 14),
+      pageStats: {
+        attempted: rankedResults.length,
+        succeeded: pages.filter((p) => p.ok).length,
+        failed: pages.filter((p) => !p.ok).length,
+      },
+    });
 
-    const gapCheck = await analyzeGaps(config, question, evidence, round, messages);
+    emit("phase", { label: `第 ${round} 轮证据判断`, detail: "正在让模型判断证据是否足够；若 25 秒内没有返回，将自动继续下一轮或降级处理。" });
+    const gapCheck = await analyzeGaps(config, question, evidence, round, messages, signal);
+    throwIfAborted(signal);
     gaps = uniqueBy([...(gapCheck.nextFocus || []), ...(gapCheck.gaps || [])], (x) => String(x).toLowerCase()).slice(0, 8);
     emit("gaps", {
       round,
@@ -541,18 +897,37 @@ async function research(payload, emit) {
       nextFocus: gapCheck.nextFocus || [],
       reasoningSummary: gapCheck.reasoningSummary,
       workingConclusion: gapCheck.workingConclusion,
+      fallback: Boolean(gapCheck.fallback),
     });
     if (config.autoResearch !== false && gapCheck.enough) break;
     if (config.autoResearch === false && round >= Number(config.minRounds || DEFAULTS.minRounds)) break;
   }
 
   emit("phase", { label: "综合与校验", detail: "按证据强度组织答案，并标记不确定点。" });
-  const answer = await synthesize(config, question, evidence, trace, messages);
+  let answer = "";
+  try {
+    answer = await synthesize(config, question, evidence, trace, messages, signal);
+  } catch (error) {
+    if (error?.name === "AbortError") throw error;
+    answer = fallbackAnswerFromEvidence(error, evidence);
+  }
   emit("final", { answer, trace, evidence: evidence.slice(0, 18) });
 }
 
 async function serveStatic(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
+  if (VENDOR_FILES[url.pathname]) {
+    const filePath = VENDOR_FILES[url.pathname].find((candidate) => existsSync(candidate));
+    if (!filePath) {
+      res.writeHead(404);
+      res.end("Vendor file not found");
+      return;
+    }
+    const data = await readFile(filePath);
+    res.writeHead(200, { "content-type": "application/javascript; charset=utf-8" });
+    res.end(data);
+    return;
+  }
   const safePath = url.pathname === "/" ? "/index.html" : url.pathname;
   const filePath = path.join(__dirname, "public", path.normalize(safePath).replace(/^(\.\.[/\\])+/, ""));
   if (!filePath.startsWith(path.join(__dirname, "public")) || !existsSync(filePath)) {
@@ -575,17 +950,25 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "POST" && req.url === "/api/research") {
       const payload = await readBody(req);
+      const requestController = new AbortController();
       res.writeHead(200, {
         "content-type": "text/event-stream; charset=utf-8",
         "cache-control": "no-cache, no-transform",
         connection: "keep-alive",
       });
+      res.on("close", () => requestController.abort());
+      const emit = (event, data) => {
+        if (requestController.signal.aborted || res.destroyed || res.writableEnded) return;
+        sse(res, event, data);
+      };
       try {
-        await research(payload, (event, data) => sse(res, event, data));
-        res.end();
+        await research(payload, emit, requestController.signal);
+        if (!res.destroyed && !res.writableEnded) res.end();
       } catch (error) {
-        sse(res, "error", { message: error.message });
-        res.end();
+        if (error?.name !== "AbortError" && !res.destroyed && !res.writableEnded) {
+          sse(res, "error", { message: error.message });
+          res.end();
+        }
       }
       return;
     }

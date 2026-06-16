@@ -285,9 +285,22 @@ h2 {
 }
 
 .message-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-bottom: 6px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.message-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(25, 103, 210, 0.2);
+  border-top-color: var(--accent);
+  border-radius: 999px;
+  animation: spin 0.8s linear infinite;
+  flex: 0 0 auto;
 }
 
 .message-content {
@@ -430,6 +443,13 @@ h2 {
   background: #f7fbff;
 }
 
+.message-action-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+  background: #f8fafc;
+  color: #9aa5b5;
+}
+
 .message-attachments {
   margin-top: 8px;
 }
@@ -487,6 +507,93 @@ h2 {
 .trace-item.thinking {
   border-color: #d6e5ff;
   background: #f6f9ff;
+}
+
+.trace-item.read-progress {
+  border-color: #cfe0f7;
+  background: #f8fbff;
+}
+
+.trace-progress {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.trace-progress-bar {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e7edf5;
+}
+
+.trace-progress-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+.trace-progress-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.trace-read-details {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.trace-read-details summary {
+  width: max-content;
+  padding: 0;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.trace-read-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.trace-read-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: white;
+}
+
+.trace-read-item a,
+.trace-read-item span {
+  min-width: 0;
+  overflow: hidden;
+  color: #253044;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-read-item a {
+  text-decoration: none;
+}
+
+.trace-read-item a:hover {
+  text-decoration: underline;
+}
+
+.trace-read-item small {
+  color: #4b6b3c;
+  white-space: nowrap;
+}
+
+.trace-read-item.failed small {
+  color: #9a4b22;
 }
 
 .chips,
@@ -760,9 +867,28 @@ button[type="submit"],
   font-weight: 650;
 }
 
+#runButton.running::before {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 8px;
+  border: 2px solid rgba(255, 255, 255, 0.38);
+  border-top-color: white;
+  border-radius: 999px;
+  vertical-align: -1px;
+  animation: spin 0.8s linear infinite;
+}
+
 button:disabled {
   cursor: progress;
   opacity: 0.68;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 dialog {
