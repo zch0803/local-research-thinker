@@ -34,6 +34,10 @@ Copy-Item -LiteralPath (Join-Path $projectRoot "DEPLOYMENT.md") -Destination $bu
 Copy-Item -LiteralPath (Join-Path $projectRoot "public") -Destination $appRoot -Recurse
 Copy-Item -LiteralPath (Join-Path $projectRoot "node_modules\\html2canvas\\dist\\html2canvas.min.js") -Destination $vendorRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot "node_modules\\jspdf\\dist\\jspdf.umd.min.js") -Destination $vendorRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot "node_modules\\katex\\dist\\katex.min.css") -Destination $vendorRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot "node_modules\\katex\\dist\\katex.min.js") -Destination $vendorRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot "node_modules\\katex\\dist\\contrib\\auto-render.min.js") -Destination $vendorRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot "node_modules\\katex\\dist\\fonts") -Destination (Join-Path $vendorRoot "fonts") -Recurse
 Copy-Item -LiteralPath $bundledNode -Destination (Join-Path $runtimeRoot "node.exe")
 
 & $compiler /target:winexe /platform:x64 /nologo /out:$launcherExe /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll $launcherSource

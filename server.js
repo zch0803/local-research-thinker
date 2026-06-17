@@ -12,6 +12,7 @@ const MIME = {
   ".css": "text/css; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".woff2": "font/woff2",
 };
 
 const VENDOR_FILES = {
@@ -22,6 +23,98 @@ const VENDOR_FILES = {
   "/vendor/jspdf.umd.min.js": [
     path.join(__dirname, "vendor", "jspdf.umd.min.js"),
     path.join(__dirname, "node_modules", "jspdf", "dist", "jspdf.umd.min.js"),
+  ],
+  "/vendor/katex.min.js": [
+    path.join(__dirname, "vendor", "katex.min.js"),
+    path.join(__dirname, "node_modules", "katex", "dist", "katex.min.js"),
+  ],
+  "/vendor/auto-render.min.js": [
+    path.join(__dirname, "vendor", "auto-render.min.js"),
+    path.join(__dirname, "node_modules", "katex", "dist", "contrib", "auto-render.min.js"),
+  ],
+  "/vendor/katex.min.css": [
+    path.join(__dirname, "vendor", "katex.min.css"),
+    path.join(__dirname, "node_modules", "katex", "dist", "katex.min.css"),
+  ],
+  "/vendor/fonts/KaTeX_AMS-Regular.woff2": [
+    path.join(__dirname, "vendor", "fonts", "KaTeX_AMS-Regular.woff2"),
+    path.join(__dirname, "node_modules", "katex", "dist", "fonts", "KaTeX_AMS-Regular.woff2"),
+  ],
+  "/vendor/fonts/KaTeX_Caligraphic-Bold.woff2": [
+    path.join(__dirname, "vendor", "fonts", "KaTeX_Caligraphic-Bold.woff2"),
+    path.join(__dirname, "node_modules", "katex", "dist", "fonts", "KaTeX_Caligraphic-Bold.woff2"),
+  ],
+  "/vendor/fonts/KaTeX_Caligraphic-Regular.woff2": [
+    path.join(__dirname, "vendor", "fonts", "KaTeX_Caligraphic-Regular.woff2"),
+    path.join(__dirname, "node_modules", "katex", "dist", "fonts", "KaTeX_Caligraphic-Regular.woff2"),
+  ],
+  "/vendor/fonts/KaTeX_Fraktur-Bold.woff2": [
+    path.join(__dirname, "vendor", "fonts", "KaTeX_Fraktur-Bold.woff2"),
+    path.join(__dirname, "node_modules", "katex", "dist", "fonts", "KaTeX_Fraktur-Bold.woff2"),
+  ],
+  "/vendor/fonts/KaTeX_Fraktur-Regular.woff2": [
+    path.join(__dirname, "vendor", "fonts", "KaTeX_Fraktur-Regular.woff2"),
+    path.join(__dirname, "node_modules", "katex", "dist", "fonts", "KaTeX_Fraktur-Regular.woff2"),
+  ],
+  "/vendor/fonts/KaTeX_Main-Bold.woff2": [
+    path.join(__dirname, "vendor", "fonts", "KaTeX_Main-Bold.woff2"),
+    path.join(__dirname, "node_modules", "katex", "dist", "fonts", "KaTeX_Main-Bold.woff2"),
+  ],
+  "/vendor/fonts/KaTeX_Main-BoldItalic.woff2": [
+    path.join(__dirname, "vendor", "fonts", "KaTeX_Main-BoldItalic.woff2"),
+    path.join(__dirname, "node_modules", "katex", "dist", "fonts", "KaTeX_Main-BoldItalic.woff2"),
+  ],
+  "/vendor/fonts/KaTeX_Main-Italic.woff2": [
+    path.join(__dirname, "vendor", "fonts", "KaTeX_Main-Italic.woff2"),
+    path.join(__dirname, "node_modules", "katex", "dist", "fonts", "KaTeX_Main-Italic.woff2"),
+  ],
+  "/vendor/fonts/KaTeX_Main-Regular.woff2": [
+    path.join(__dirname, "vendor", "fonts", "KaTeX_Main-Regular.woff2"),
+    path.join(__dirname, "node_modules", "katex", "dist", "fonts", "KaTeX_Main-Regular.woff2"),
+  ],
+  "/vendor/fonts/KaTeX_Math-BoldItalic.woff2": [
+    path.join(__dirname, "vendor", "fonts", "KaTeX_Math-BoldItalic.woff2"),
+    path.join(__dirname, "node_modules", "katex", "dist", "fonts", "KaTeX_Math-BoldItalic.woff2"),
+  ],
+  "/vendor/fonts/KaTeX_Math-Italic.woff2": [
+    path.join(__dirname, "vendor", "fonts", "KaTeX_Math-Italic.woff2"),
+    path.join(__dirname, "node_modules", "katex", "dist", "fonts", "KaTeX_Math-Italic.woff2"),
+  ],
+  "/vendor/fonts/KaTeX_SansSerif-Bold.woff2": [
+    path.join(__dirname, "vendor", "fonts", "KaTeX_SansSerif-Bold.woff2"),
+    path.join(__dirname, "node_modules", "katex", "dist", "fonts", "KaTeX_SansSerif-Bold.woff2"),
+  ],
+  "/vendor/fonts/KaTeX_SansSerif-Italic.woff2": [
+    path.join(__dirname, "vendor", "fonts", "KaTeX_SansSerif-Italic.woff2"),
+    path.join(__dirname, "node_modules", "katex", "dist", "fonts", "KaTeX_SansSerif-Italic.woff2"),
+  ],
+  "/vendor/fonts/KaTeX_SansSerif-Regular.woff2": [
+    path.join(__dirname, "vendor", "fonts", "KaTeX_SansSerif-Regular.woff2"),
+    path.join(__dirname, "node_modules", "katex", "dist", "fonts", "KaTeX_SansSerif-Regular.woff2"),
+  ],
+  "/vendor/fonts/KaTeX_Script-Regular.woff2": [
+    path.join(__dirname, "vendor", "fonts", "KaTeX_Script-Regular.woff2"),
+    path.join(__dirname, "node_modules", "katex", "dist", "fonts", "KaTeX_Script-Regular.woff2"),
+  ],
+  "/vendor/fonts/KaTeX_Size1-Regular.woff2": [
+    path.join(__dirname, "vendor", "fonts", "KaTeX_Size1-Regular.woff2"),
+    path.join(__dirname, "node_modules", "katex", "dist", "fonts", "KaTeX_Size1-Regular.woff2"),
+  ],
+  "/vendor/fonts/KaTeX_Size2-Regular.woff2": [
+    path.join(__dirname, "vendor", "fonts", "KaTeX_Size2-Regular.woff2"),
+    path.join(__dirname, "node_modules", "katex", "dist", "fonts", "KaTeX_Size2-Regular.woff2"),
+  ],
+  "/vendor/fonts/KaTeX_Size3-Regular.woff2": [
+    path.join(__dirname, "vendor", "fonts", "KaTeX_Size3-Regular.woff2"),
+    path.join(__dirname, "node_modules", "katex", "dist", "fonts", "KaTeX_Size3-Regular.woff2"),
+  ],
+  "/vendor/fonts/KaTeX_Size4-Regular.woff2": [
+    path.join(__dirname, "vendor", "fonts", "KaTeX_Size4-Regular.woff2"),
+    path.join(__dirname, "node_modules", "katex", "dist", "fonts", "KaTeX_Size4-Regular.woff2"),
+  ],
+  "/vendor/fonts/KaTeX_Typewriter-Regular.woff2": [
+    path.join(__dirname, "vendor", "fonts", "KaTeX_Typewriter-Regular.woff2"),
+    path.join(__dirname, "node_modules", "katex", "dist", "fonts", "KaTeX_Typewriter-Regular.woff2"),
   ],
 };
 
@@ -832,18 +925,83 @@ async function synthesize(config, question, evidence, trace, messages, signal) {
   ], "", { timeoutMs: LLM_FINAL_TIMEOUT_MS, signal });
 }
 
+async function answerFromContext(config, question, messages, signal) {
+  if (!config.llmApiKey) {
+    return "尚未配置大模型 API，普通模式无法直接作答。请先在设置中填写可用的模型配置。";
+  }
+  throwIfAborted(signal);
+  return callLLM(
+    { ...config, maxTokens: Number(config.maxTokens || DEFAULTS.maxTokens) },
+    [
+      {
+        role: "system",
+        content:
+          "You are a helpful local assistant. Answer in the user's language. Use the conversation context when it matters. Be direct, clear, and honest about uncertainty. Do not claim web verification unless retrieval evidence is explicitly provided.",
+      },
+      {
+        role: "user",
+        content:
+          "Conversation context:\n" +
+          recentContext(messages) +
+          "\n\nLatest question:\n" +
+          question +
+          "\n\nProvide the best direct answer based on the existing conversation only.",
+      },
+    ],
+    "",
+    { timeoutMs: LLM_FINAL_TIMEOUT_MS, signal }
+  );
+}
+
 async function research(payload, emit, signal) {
   const config = { ...DEFAULTS, ...(payload.config || {}) };
   const rawQuestion = String(payload.question || "").trim();
   const attachmentsText = attachmentContext(payload.attachments);
   const question = attachmentsText ? `${rawQuestion}\n\n${attachmentsText}` : rawQuestion;
   const messages = Array.isArray(payload.messages) ? payload.messages : [];
+  const mode = payload.mode === "chat" ? "chat" : payload.mode === "research" ? "research" : "research";
+  const directAnswerOnly = Boolean(payload.directAnswerOnly);
+  const seedEvidence = Array.isArray(payload.seedEvidence) ? payload.seedEvidence : [];
+  const seedTrace = Array.isArray(payload.seedTrace) ? payload.seedTrace : [];
   if (!rawQuestion) throw new Error("Question is required.");
 
-  const trace = [];
-  let evidence = [];
+  const trace = directAnswerOnly ? [...seedTrace] : [];
+  let evidence = directAnswerOnly ? [...seedEvidence] : [];
   let gaps = [];
   const maxRounds = Number(config.maxRounds || DEFAULTS.maxRounds);
+
+  if (mode === "chat") {
+    emit("phase", {
+      label: "普通模式回答",
+      detail: "基于当前会话上下文直接作答，不发起新的网页检索。",
+    });
+    let answer = "";
+    try {
+      answer = await answerFromContext(config, question, messages, signal);
+    } catch (error) {
+      if (error?.name === "AbortError") throw error;
+      answer = `出错：${error.message}`;
+    }
+    emit("final", { answer, trace: [], evidence: [], directAnswerOnly: false, mode: "chat" });
+    return;
+  }
+
+  if (directAnswerOnly) {
+    if (!evidence.length) throw new Error("No saved evidence is available for direct answer mode.");
+    emit("phase", {
+      label: "基于当前证据直接作答",
+      detail: `复用上一轮保留的 ${evidence.length} 条证据，不再发起新的网页检索。`,
+    });
+    let answer = "";
+    try {
+      answer = await synthesize(config, question, evidence, trace, messages, signal);
+    } catch (error) {
+      if (error?.name === "AbortError") throw error;
+      answer = fallbackAnswerFromEvidence(error, evidence);
+    }
+    emit("final", { answer, trace, evidence: evidence.slice(0, 18), directAnswerOnly: true });
+    return;
+  }
 
   emit("phase", { label: "问题增强与自动规划", detail: "系统会根据证据缺口自动决定是否继续检索，最多到安全上限。" });
   for (let round = 1; round <= maxRounds; round++) {
@@ -911,7 +1069,7 @@ async function research(payload, emit, signal) {
     if (error?.name === "AbortError") throw error;
     answer = fallbackAnswerFromEvidence(error, evidence);
   }
-  emit("final", { answer, trace, evidence: evidence.slice(0, 18) });
+  emit("final", { answer, trace, evidence: evidence.slice(0, 18), directAnswerOnly: false });
 }
 
 async function serveStatic(req, res) {
@@ -924,7 +1082,7 @@ async function serveStatic(req, res) {
       return;
     }
     const data = await readFile(filePath);
-    res.writeHead(200, { "content-type": "application/javascript; charset=utf-8" });
+    res.writeHead(200, { "content-type": MIME[path.extname(filePath)] || "application/octet-stream" });
     res.end(data);
     return;
   }

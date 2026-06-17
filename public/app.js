@@ -10,7 +10,10 @@ const state = {
   config: JSON.parse(localStorage.getItem(storage.config) || "{}"),
   sessions: JSON.parse(localStorage.getItem(storage.sessions) || "[]"),
   activeId: localStorage.getItem(storage.active),
-  modelPresets: [],
+  defaultModelPresets: [],
+  customModelPresets: [],
+  modelPresetApiKeys: {},
+  activeModelPresetId: null,
   running: false,
   pendingAssistantId: null,
   abortController: null,
@@ -18,6 +21,8 @@ const state = {
   attachments: [],
   sessionQuery: "",
   traceOpenById: {},
+  responseMode: "chat",
+  sessionSearchTarget: null,
 };
 
 const fields = ["llmBaseUrl", "llmModel", "llmApiKey", "searchProvider", "serperApiKey", "tavilyApiKey"];
@@ -45,6 +50,52 @@ function cloneSessionWithFreshIds(session) {
 function saveSessions() {
   localStorage.setItem(storage.sessions, JSON.stringify(state.sessions));
   localStorage.setItem(storage.active, state.activeId || "");
+}
+
+function normalizeCustomPresets(presets = []) {
+  return presets
+    .filter((preset) => preset && (preset.label || preset.baseUrl || preset.model))
+    .map((preset, index) => ({
+      id: preset.id || `custom-${index + 1}-${uid()}`,
+      label: String(preset.label || `Custom ${index + 1}`).trim(),
+      baseUrl: String(preset.baseUrl || "").trim(),
+      model: String(preset.model || "").trim(),
+      apiKey: String(preset.apiKey || "").trim(),
+      kind: "custom",
+    }));
+}
+
+function allModelPresets() {
+  return [
+    ...state.defaultModelPresets,
+    ...state.customModelPresets,
+    { id: "__custom__", label: "Custom (unsaved)", baseUrl: "", model: "", kind: "placeholder" },
+  ];
+}
+
+function modelPresetApiKey(preset) {
+  if (!preset) return "";
+  if (preset.kind === "custom") return preset.apiKey || "";
+  return state.modelPresetApiKeys[preset.id] || "";
+}
+
+function rememberPresetApiKey(id, apiKey) {
+  if (!id || id === "__custom__") return;
+  const preset = allModelPresets().find((item) => item.id === id);
+  if (!preset || preset.kind === "placeholder") return;
+  if (preset.kind === "custom") {
+    preset.apiKey = apiKey;
+    return;
+  }
+  state.modelPresetApiKeys[id] = apiKey;
+}
+
+function rememberActivePresetApiKey() {
+  const keyField = $("#llmApiKey");
+  const apiKey = keyField ? keyField.value.trim() : state.config.llmApiKey || "";
+  rememberPresetApiKey(state.activeModelPresetId, apiKey);
+  state.config.modelPresetApiKeys = state.modelPresetApiKeys;
+  state.config.customModelPresets = state.customModelPresets;
 }
 
 function exportSessions() {
@@ -316,6 +367,7 @@ async function importSessions(file) {
         content: message.content || "",
         attachments: message.attachments || [],
         trace: message.trace || [],
+        researchContext: message.researchContext || null,
         done: message.done,
         createdAt: message.createdAt || now(),
         updatedAt: message.updatedAt,
@@ -348,10 +400,35 @@ function createSession(render = true) {
   return session;
 }
 
-function setActiveSession(id) {
+function setActiveSession(id, match = null) {
   state.activeId = id;
+  state.sessionSearchTarget = match && state.sessionQuery.trim()
+    ? { sessionId: id, messageId: match.messageId, query: state.sessionQuery.trim() }
+    : null;
   saveSessions();
   renderAll();
+}
+
+function deleteSession(id, options = {}) {
+  const index = state.sessions.findIndex((session) => session.id === id);
+  if (index < 0) return false;
+  const session = state.sessions[index];
+  const confirmDelete = options.confirm || window.confirm;
+  if (!confirmDelete(`删除会话「${session.title || "未命名会话"}」？`)) return false;
+
+  for (const message of session.messages || []) {
+    delete state.traceOpenById[message.id];
+  }
+
+  state.sessions.splice(index, 1);
+  if (state.activeId === id) {
+    state.sessionSearchTarget = null;
+    state.activeId = state.sessions[Math.min(index, state.sessions.length - 1)]?.id || null;
+    if (!state.activeId) createSession(false);
+  }
+  saveSessions();
+  if (options.render !== false) renderAll();
+  return true;
 }
 
 function deleteUserTurn(messageId) {
@@ -394,8 +471,21 @@ function clearAssistantTrace(messageId) {
 async function loadDefaults() {
   const response = await fetch("/api/defaults");
   const { defaults } = await response.json();
-  state.modelPresets = defaults.modelPresets || [];
+  state.defaultModelPresets = (defaults.modelPresets || [])
+    .filter((preset) => preset?.label !== "Custom")
+    .map((preset, index) => ({
+      ...preset,
+      id: preset.id || `builtin-${index + 1}`,
+      kind: "builtin",
+    }));
   state.config = { ...defaults, ...state.config };
+  state.customModelPresets = normalizeCustomPresets(state.config.customModelPresets || []);
+  state.config.customModelPresets = state.customModelPresets;
+  state.modelPresetApiKeys = state.config.modelPresetApiKeys && typeof state.config.modelPresetApiKeys === "object"
+    ? { ...state.config.modelPresetApiKeys }
+    : {};
+  state.config.modelPresetApiKeys = state.modelPresetApiKeys;
+  state.responseMode = state.config.responseMode || "chat";
   if (["deepseek-chat", "deepseek-reasoner"].includes(state.config.llmModel)) {
     state.config.llmBaseUrl = "https://api.deepseek.com/v1";
     state.config.llmModel = "deepseek-v4-flash";
@@ -409,12 +499,13 @@ async function loadDefaults() {
 }
 
 function populateModelPresets() {
+  const presets = allModelPresets();
   for (const id of ["composerModel", "modelPreset"]) {
     const select = $("#" + id);
     select.innerHTML = "";
-    for (const preset of state.modelPresets) {
+    for (const preset of presets) {
       const option = document.createElement("option");
-      option.value = preset.label;
+      option.value = preset.id;
       option.textContent = preset.label;
       select.appendChild(option);
     }
@@ -423,19 +514,27 @@ function populateModelPresets() {
 }
 
 function selectPresetForCurrentConfig() {
-  const match = state.modelPresets.find(
-    (preset) => preset.baseUrl === state.config.llmBaseUrl && preset.model === state.config.llmModel
+  const match = [...state.customModelPresets, ...state.defaultModelPresets].find(
+    (preset) =>
+      preset.baseUrl === state.config.llmBaseUrl &&
+      preset.model === state.config.llmModel &&
+      (preset.kind !== "custom" || preset.apiKey === state.config.llmApiKey)
   );
-  const value = match?.label || "Custom";
+  const value = match?.id || "__custom__";
+  state.activeModelPresetId = value;
   $("#composerModel").value = value;
   $("#modelPreset").value = value;
+  $("#customPresetName").value = match?.kind === "custom" ? match.label : "";
 }
 
-function applyPreset(label) {
-  const preset = state.modelPresets.find((item) => item.label === label);
-  if (!preset || preset.label === "Custom") return;
+function applyPreset(id) {
+  const preset = allModelPresets().find((item) => item.id === id);
+  if (!preset || preset.kind === "placeholder") return;
+  rememberActivePresetApiKey();
   state.config.llmBaseUrl = preset.baseUrl;
   state.config.llmModel = preset.model;
+  state.config.llmApiKey = modelPresetApiKey(preset);
+  state.activeModelPresetId = preset.id;
   syncConfigFields();
   saveConfig();
 }
@@ -446,14 +545,72 @@ function syncConfigFields() {
     if (el) el.value = state.config[id] || "";
   }
   $("#thinkingMode").setAttribute("aria-pressed", String(Boolean(state.config.thinkingMode)));
+  setResponseMode(state.responseMode || state.config.responseMode || "chat", false);
   selectPresetForCurrentConfig();
 }
 
 function saveConfig() {
   for (const id of fields) state.config[id] = $("#" + id).value.trim();
+  rememberPresetApiKey(state.activeModelPresetId, state.config.llmApiKey);
   state.config.thinkingMode = $("#thinkingMode").getAttribute("aria-pressed") === "true";
+  state.config.responseMode = state.responseMode;
+  state.config.customModelPresets = state.customModelPresets;
+  state.config.modelPresetApiKeys = state.modelPresetApiKeys;
   localStorage.setItem(storage.config, JSON.stringify(state.config));
   selectPresetForCurrentConfig();
+}
+
+function setResponseMode(mode, persist = true) {
+  state.responseMode = mode === "research" ? "research" : "chat";
+  $("#chatModeButton").setAttribute("aria-pressed", String(state.responseMode === "chat"));
+  $("#researchModeButton").setAttribute("aria-pressed", String(state.responseMode === "research"));
+  $("#thinkingMode").disabled = state.responseMode !== "research";
+  $("#thinkingMode").title = state.responseMode === "research" ? "Thinking mode" : "Only used in research mode";
+  if (!state.running) $("#runButton").textContent = state.responseMode === "research" ? "开始研究" : "发送";
+  if (persist) saveConfig();
+}
+
+function saveCustomPreset() {
+  const name = $("#customPresetName").value.trim();
+  const baseUrl = $("#llmBaseUrl").value.trim();
+  const model = $("#llmModel").value.trim();
+  const apiKey = $("#llmApiKey").value.trim();
+  if (!name || !baseUrl || !model) {
+    window.alert("请先填写自定义名称、Base URL 和 Model。");
+    return;
+  }
+  const existingId = $("#modelPreset").value;
+  const preset = {
+    id: state.customModelPresets.some((item) => item.id === existingId) ? existingId : `custom-${uid()}`,
+    label: name,
+    baseUrl,
+    model,
+    apiKey,
+    kind: "custom",
+  };
+  const index = state.customModelPresets.findIndex((item) => item.id === preset.id);
+  if (index >= 0) state.customModelPresets.splice(index, 1, preset);
+  else state.customModelPresets.push(preset);
+  state.config.customModelPresets = state.customModelPresets;
+  populateModelPresets();
+  $("#composerModel").value = preset.id;
+  $("#modelPreset").value = preset.id;
+  state.activeModelPresetId = preset.id;
+  saveConfig();
+}
+
+function deleteCustomPreset() {
+  const selectedId = $("#modelPreset").value;
+  const index = state.customModelPresets.findIndex((item) => item.id === selectedId);
+  if (index < 0) {
+    window.alert("当前未选中可删除的自定义模型。");
+    return;
+  }
+  state.customModelPresets.splice(index, 1);
+  state.config.customModelPresets = state.customModelPresets;
+  populateModelPresets();
+  selectPresetForCurrentConfig();
+  saveConfig();
 }
 
 function titleFromQuestion(text) {
@@ -470,6 +627,10 @@ function escapeHtml(text) {
     .replace(/'/g, "&#39;");
 }
 
+function escapeRegExp(text) {
+  return String(text || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function renderInlineMarkdown(text) {
   let html = escapeHtml(text);
   html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
@@ -478,6 +639,48 @@ function renderInlineMarkdown(text) {
   html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
   html = html.replace(/&lt;br\s*\/?&gt;/gi, "<br>");
   return html;
+}
+
+function renderMath(root) {
+  if (!root || typeof window.renderMathInElement !== "function") return;
+  window.renderMathInElement(root, {
+    delimiters: [
+      { left: "$$", right: "$$", display: true },
+      { left: "\\[", right: "\\]", display: true },
+      { left: "\\(", right: "\\)", display: false },
+    ],
+    ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code"],
+    throwOnError: false,
+    strict: "ignore",
+    trust: true,
+  });
+}
+
+function findSessionMatches(session, query) {
+  const needle = String(query || "").trim().toLowerCase();
+  if (!needle) return [];
+  const matches = [];
+  for (const message of session.messages || []) {
+    const content = String(message.content || "");
+    const lower = content.toLowerCase();
+    let start = 0;
+    while (start < lower.length) {
+      const index = lower.indexOf(needle, start);
+      if (index < 0) break;
+      const previewStart = Math.max(0, index - 16);
+      const previewEnd = Math.min(content.length, index + needle.length + 28);
+      const preview = content.slice(previewStart, previewEnd).replace(/\s+/g, " ").trim();
+      matches.push({
+        messageId: message.id,
+        role: message.role,
+        index,
+        preview: previewStart > 0 ? `...${preview}` : preview,
+      });
+      start = index + needle.length;
+      if (matches.length >= 6) return matches;
+    }
+  }
+  return matches;
 }
 
 function splitTableRow(line) {
@@ -604,23 +807,104 @@ function renderSessions() {
   const list = $("#sessions");
   list.innerHTML = "";
   const query = state.sessionQuery.trim().toLowerCase();
-  const sessions = query
-    ? state.sessions.filter((session) =>
-        `${session.title} ${session.messages.map((message) => message.content).join(" ")}`.toLowerCase().includes(query)
-      )
-    : state.sessions;
-  for (const session of sessions) {
+  const sessions = state.sessions
+    .map((session) => {
+      const titleMatched = String(session.title || "").toLowerCase().includes(query);
+      const matches = query ? findSessionMatches(session, query) : [];
+      return { session, titleMatched, matches };
+    })
+    .filter(({ titleMatched, matches }) => !query || titleMatched || matches.length);
+
+  for (const { session, matches } of sessions) {
+    const card = document.createElement("div");
+    card.className = `session-item${session.id === state.activeId ? " active" : ""}`;
     const button = document.createElement("button");
-    button.className = `session-item${session.id === state.activeId ? " active" : ""}`;
+    button.className = "session-main";
     button.type = "button";
-    button.addEventListener("click", () => setActiveSession(session.id));
+    button.addEventListener("click", () => setActiveSession(session.id, matches[0] || null));
     const title = document.createElement("strong");
     title.textContent = session.title;
     const meta = document.createElement("span");
-    meta.textContent = `${session.messages.length} 条消息`;
+    meta.textContent = query && matches.length
+      ? `${matches.length} 处命中 · ${session.messages.length} 条消息`
+      : `${session.messages.length} 条消息`;
     button.append(title, meta);
-    list.appendChild(button);
+    card.appendChild(button);
+    const deleteButton = document.createElement("button");
+    deleteButton.className = "session-delete";
+    deleteButton.type = "button";
+    deleteButton.title = "删除会话";
+    deleteButton.setAttribute("aria-label", `删除会话 ${session.title || ""}`.trim());
+    deleteButton.textContent = "×";
+    deleteButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      deleteSession(session.id);
+    });
+    card.appendChild(deleteButton);
+
+    if (query && matches.length) {
+      const hitList = document.createElement("div");
+      hitList.className = "session-hit-list";
+      for (const match of matches.slice(0, 3)) {
+        const hit = document.createElement("button");
+        hit.type = "button";
+        hit.className = "session-hit";
+        hit.textContent = `${match.role === "user" ? "问题" : "回答"} · ${match.preview}`;
+        hit.addEventListener("click", (event) => {
+          event.stopPropagation();
+          setActiveSession(session.id, match);
+        });
+        hitList.appendChild(hit);
+      }
+      card.appendChild(hitList);
+    }
+    list.appendChild(card);
   }
+}
+
+function highlightQueryInElement(element, query) {
+  const needle = String(query || "").trim();
+  if (!needle) return;
+  const pattern = new RegExp(escapeRegExp(needle), "gi");
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (!node.nodeValue?.trim()) return NodeFilter.FILTER_REJECT;
+      const parentTag = node.parentElement?.tagName;
+      if (parentTag === "CODE" || parentTag === "PRE" || parentTag === "MARK") return NodeFilter.FILTER_REJECT;
+      if (node.parentElement?.closest(".katex")) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const textNodes = [];
+  while (walker.nextNode()) textNodes.push(walker.currentNode);
+  for (const node of textNodes) {
+    const text = node.nodeValue;
+    let lastIndex = 0;
+    let changed = false;
+    const fragment = document.createDocumentFragment();
+    for (const match of text.matchAll(pattern)) {
+      changed = true;
+      const index = match.index || 0;
+      if (index > lastIndex) fragment.appendChild(document.createTextNode(text.slice(lastIndex, index)));
+      const mark = document.createElement("mark");
+      mark.textContent = text.slice(index, index + match[0].length);
+      fragment.appendChild(mark);
+      lastIndex = index + match[0].length;
+    }
+    if (!changed) continue;
+    if (lastIndex < text.length) fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
+    node.parentNode.replaceChild(fragment, node);
+  }
+}
+
+function locateSessionSearchTarget() {
+  const target = state.sessionSearchTarget;
+  if (!target || target.sessionId !== state.activeId) return;
+  const box = $("#messages");
+  const article = box.querySelector(`[data-id="${CSS.escape(target.messageId)}"]`);
+  if (!article) return;
+  box.scrollTo({ top: Math.max(0, article.offsetTop - 16), behavior: "smooth" });
+  state.sessionSearchTarget = null;
 }
 
 function renderMessages() {
@@ -640,7 +924,8 @@ function renderMessages() {
   }
   for (const message of session.messages) box.appendChild(renderMessage(message));
   renderQuestionNav();
-  if (stickToBottom) box.scrollTop = box.scrollHeight;
+  if (state.sessionSearchTarget?.sessionId === session.id) locateSessionSearchTarget();
+  else if (stickToBottom) box.scrollTop = box.scrollHeight;
   else box.scrollTop = Math.max(0, previousTop + (box.scrollHeight - previousHeight));
   updateActiveQuestionMarker();
 }
@@ -661,6 +946,11 @@ function renderMessage(message) {
     content.innerHTML = renderMarkdown(message.content || "");
   } else {
     content.textContent = message.content || "";
+  }
+  renderMath(content);
+  if (state.sessionSearchTarget?.sessionId === state.activeId && state.sessionSearchTarget.messageId === message.id) {
+    article.classList.add("search-target");
+    highlightQueryInElement(content, state.sessionSearchTarget.query);
   }
 
   if (message.role === "assistant" && message.id === state.pendingAssistantId && !message.done) {
@@ -1031,9 +1321,11 @@ function renderAttachmentList() {
 
 function setRunning(value) {
   state.running = value;
+  $("#chatModeButton").disabled = value;
+  $("#researchModeButton").disabled = value;
   $("#runButton").disabled = false;
   $("#runButton").classList.toggle("running", value);
-  $("#runButton").textContent = value ? "停止" : "发送";
+  $("#runButton").textContent = value ? "Stop" : state.responseMode === "research" ? "Research" : "Send";
 }
 
 function stopCurrentResearch() {
@@ -1141,6 +1433,15 @@ function handleResearchEvent(event, data) {
     return;
   }
   if (event === "final") {
+    const message = pendingAssistant();
+    if (message) {
+      message.researchContext = {
+        mode: data.directAnswerOnly ? "direct-answer" : "research",
+        savedAt: now(),
+        evidence: Array.isArray(data.evidence) ? data.evidence : [],
+        trace: Array.isArray(data.trace) ? data.trace : [],
+      };
+    }
     finishAssistantMessage(data.answer);
     return;
   }
@@ -1199,9 +1500,13 @@ async function testApi() {
 $("#settingsButton").addEventListener("click", () => $("#settingsDialog").showModal());
 $("#saveSettings").addEventListener("click", saveConfig);
 $("#testApiButton").addEventListener("click", testApi);
+$("#saveCustomPresetButton").addEventListener("click", saveCustomPreset);
+$("#deleteCustomPresetButton").addEventListener("click", deleteCustomPreset);
 $("#newSessionButton").addEventListener("click", () => createSession(true));
 $("#composerModel").addEventListener("change", (event) => applyPreset(event.target.value));
 $("#modelPreset").addEventListener("change", (event) => applyPreset(event.target.value));
+$("#chatModeButton").addEventListener("click", () => setResponseMode("chat"));
+$("#researchModeButton").addEventListener("click", () => setResponseMode("research"));
 $("#thinkingMode").addEventListener("click", () => {
   const next = $("#thinkingMode").getAttribute("aria-pressed") !== "true";
   $("#thinkingMode").setAttribute("aria-pressed", String(next));
@@ -1210,6 +1515,7 @@ $("#thinkingMode").addEventListener("click", () => {
 $("#attachFile").addEventListener("change", (event) => readAttachments(event.target.files));
 $("#sessionSearch").addEventListener("input", (event) => {
   state.sessionQuery = event.target.value;
+  if (!state.sessionQuery.trim()) state.sessionSearchTarget = null;
   renderSessions();
 });
 $("#question").addEventListener("keydown", (event) => {
@@ -1247,13 +1553,20 @@ $("#taskForm").addEventListener("submit", async (event) => {
   saveConfig();
   const question = $("#question").value.trim();
   if (!question) return;
+  const submitMode = state.responseMode || "chat";
 
   const session = activeSession();
   if (session.title === "新会话") session.title = titleFromQuestion(question);
   const attachments = state.attachments;
   session.messages.push({ id: uid(), role: "user", content: question, attachments, createdAt: now() });
   const assistantId = uid();
-  session.messages.push({ id: assistantId, role: "assistant", content: "正在启动研究...", trace: [], createdAt: now() });
+  session.messages.push({
+    id: assistantId,
+    role: "assistant",
+    content: submitMode === "research" ? "Starting research..." : "Answering from conversation context...",
+    trace: [],
+    createdAt: now(),
+  });
   session.updatedAt = now();
   state.pendingAssistantId = assistantId;
   state.attachments = [];
@@ -1267,12 +1580,13 @@ $("#taskForm").addEventListener("submit", async (event) => {
   setRunning(true);
 
   const payload = {
+    mode: submitMode,
     question,
     attachments,
     messages: session.messages.filter((item) => item.id !== assistantId).map((item) => ({ role: item.role, content: item.content })),
     config: {
       ...state.config,
-      autoResearch: true,
+      autoResearch: submitMode === "research",
       maxRounds: state.config.thinkingMode ? 8 : 6,
       minRounds: state.config.thinkingMode ? 3 : 2,
       queriesPerRound: state.config.thinkingMode ? 6 : 5,

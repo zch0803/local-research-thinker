@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Local MiroThinker</title>
+    <link rel="stylesheet" href="/vendor/katex.min.css" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -52,6 +53,10 @@
               模型
               <select id="composerModel"></select>
             </label>
+            <div class="mode-switch" aria-label="&#22238;&#31572;&#27169;&#24335;">
+              <button id="chatModeButton" class="mode-button" type="button" aria-pressed="true">&#26222;&#36890;</button>
+              <button id="researchModeButton" class="mode-button" type="button" aria-pressed="false">&#30740;&#31350;</button>
+            </div>
             <button id="thinkingMode" class="icon-toggle" type="button" aria-pressed="false" title="思考模式">✦</button>
             <label class="file-button">
               <input id="attachFile" type="file" multiple />
@@ -63,7 +68,9 @@
           <textarea id="question" placeholder="继续提问，或输入一个新的研究问题..." required></textarea>
           <div class="composer-footer">
             <div class="auto-note">检索过程会折叠在本轮回答下方，输入框始终停在底部。</div>
-            <button id="runButton" type="submit">发送</button>
+            <div class="composer-actions">
+              <button id="runButton" type="submit">发送</button>
+            </div>
           </div>
         </form>
       </section>
@@ -82,6 +89,13 @@
         <label>Base URL <input id="llmBaseUrl" autocomplete="off" /></label>
         <label>Model <input id="llmModel" autocomplete="off" /></label>
         <label>API Key <input id="llmApiKey" type="password" autocomplete="off" /></label>
+        <div class="preset-manager">
+          <label>&#33258;&#23450;&#20041;&#21517;&#31216; <input id="customPresetName" autocomplete="off" placeholder="Relay A / Gemini Proxy" /></label>
+          <div class="preset-actions">
+            <button id="saveCustomPresetButton" class="secondary" value="none" type="button">&#20445;&#23384;&#24403;&#21069;&#20026;&#33258;&#23450;&#20041;</button>
+            <button id="deleteCustomPresetButton" class="secondary" value="none" type="button">&#21024;&#38500;&#36873;&#20013;&#33258;&#23450;&#20041;</button>
+          </div>
+        </div>
         <label>
           搜索源
           <select id="searchProvider">
@@ -102,6 +116,8 @@
 
     <script src="/vendor/html2canvas.min.js"></script>
     <script src="/vendor/jspdf.umd.min.js"></script>
+    <script src="/vendor/katex.min.js"></script>
+    <script src="/vendor/auto-render.min.js"></script>
     <script src="/app.js" type="module"></script>
   </body>
 </html>
