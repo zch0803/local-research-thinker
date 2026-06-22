@@ -1,6 +1,12 @@
 ﻿$ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
+$packageManifest = Get-Content -Raw -LiteralPath (Join-Path $projectRoot "package.json") | ConvertFrom-Json
+$packageVersion = $packageManifest.version
+if ([string]::IsNullOrWhiteSpace($packageVersion)) {
+  throw "package.json version is required to build a release package."
+}
+
 $distRoot = Join-Path $projectRoot "dist"
 $bundleRoot = Join-Path $distRoot "LocalResearchAgent"
 $appRoot = Join-Path $bundleRoot "app"
@@ -57,11 +63,22 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path $launcherExe)) {
 }
 
 $zipPath = Join-Path $distRoot "LocalResearchAgent-win-x64.zip"
-if (Test-Path $zipPath) {
-  Remove-Item -LiteralPath $zipPath -Force
+$versionedZipPath = Join-Path $distRoot ("LocalResearchAgent-v{0}-win-x64.zip" -f $packageVersion)
+$checksumPath = "$versionedZipPath.sha256"
+
+foreach ($releasePath in @($zipPath, $versionedZipPath, $checksumPath)) {
+  if (Test-Path $releasePath) {
+    Remove-Item -LiteralPath $releasePath -Force
+  }
 }
 
 Compress-Archive -Path $bundleRoot -DestinationPath $zipPath
+Copy-Item -LiteralPath $zipPath -Destination $versionedZipPath -Force
+$checksum = (Get-FileHash -LiteralPath $versionedZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+Set-Content -LiteralPath $checksumPath -Value "$checksum  $(Split-Path -Leaf $versionedZipPath)" -Encoding ASCII
+
 Write-Host "Created distribution folder: $bundleRoot"
 Write-Host "Created zip package: $zipPath"
+Write-Host "Created release package: $versionedZipPath"
+Write-Host "Created checksum: $checksumPath"
 

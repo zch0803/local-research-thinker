@@ -1,6 +1,6 @@
-﻿{
+{
   "name": "local-research-agent",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "A local web research agent for multi-round retrieval and citation-focused synthesis.",
   "type": "module",
@@ -18,4 +18,3 @@
     "katex": "^0.17.0"
   }
 }
-
