@@ -18,6 +18,7 @@ const state = {
   pendingAssistantId: null,
   abortController: null,
   stopRequested: false,
+  researchJobs: new Map(),
   attachments: [],
   sessionQuery: "",
   traceOpenById: {},
@@ -391,11 +392,69 @@ function activeSession() {
   return session;
 }
 
+function findSession(sessionId) {
+  return state.sessions.find((item) => item.id === sessionId) || null;
+}
+
+function findAssistantMessage(sessionId, assistantId) {
+  return findSession(sessionId)?.messages.find((item) => item.id === assistantId) || null;
+}
+
+function activeResearchJob() {
+  return [...state.researchJobs.values()].find((job) => job.sessionId === state.activeId) || null;
+}
+
+function isSessionRunning(sessionId) {
+  return [...state.researchJobs.values()].some((job) => job.sessionId === sessionId);
+}
+
+function isMessagePending(message) {
+  return Boolean(message?.id && state.researchJobs.has(message.id) && !message.done);
+}
+
+function updateRunControls() {
+  const job = activeResearchJob();
+  const running = Boolean(job);
+  state.running = running;
+  state.pendingAssistantId = job?.assistantId || null;
+  state.abortController = job?.controller || null;
+  state.stopRequested = Boolean(job?.stopRequested);
+  $("#chatModeButton").disabled = running;
+  $("#researchModeButton").disabled = running;
+  $("#runButton").disabled = false;
+  $("#runButton").classList.toggle("running", running);
+  $("#runButton").textContent = running ? "Stop" : state.responseMode === "research" ? "Research" : "Send";
+}
+
+function beginResearchJob(sessionId, assistantId, controller, mode = "research") {
+  const job = { sessionId, assistantId, controller, mode, stopRequested: false };
+  state.researchJobs.set(assistantId, job);
+  updateRunControls();
+  return job;
+}
+
+function completeResearchJob(job) {
+  if (!job) return;
+  if (state.researchJobs.get(job.assistantId) === job) {
+    state.researchJobs.delete(job.assistantId);
+  }
+  if (state.pendingAssistantId === job.assistantId) state.pendingAssistantId = null;
+  if (state.abortController === job.controller) state.abortController = null;
+  updateRunControls();
+}
+
+function renderAfterSessionUpdate(sessionId) {
+  renderSessions();
+  if (state.activeId === sessionId) renderMessages();
+  updateRunControls();
+}
+
 function createSession(render = true) {
   const session = { id: uid(), title: "新会话", createdAt: now(), updatedAt: now(), messages: [] };
   state.sessions.unshift(session);
   state.activeId = session.id;
   saveSessions();
+  updateRunControls();
   if (render) renderAll();
   return session;
 }
@@ -406,6 +465,7 @@ function setActiveSession(id, match = null) {
     ? { sessionId: id, messageId: match.messageId, query: state.sessionQuery.trim() }
     : null;
   saveSessions();
+  updateRunControls();
   renderAll();
 }
 
@@ -419,6 +479,11 @@ function deleteSession(id, options = {}) {
   for (const message of session.messages || []) {
     delete state.traceOpenById[message.id];
   }
+  for (const job of [...state.researchJobs.values()].filter((item) => item.sessionId === id)) {
+    job.stopRequested = true;
+    job.controller?.abort();
+    completeResearchJob(job);
+  }
 
   state.sessions.splice(index, 1);
   if (state.activeId === id) {
@@ -427,6 +492,7 @@ function deleteSession(id, options = {}) {
     if (!state.activeId) createSession(false);
   }
   saveSessions();
+  updateRunControls();
   if (options.render !== false) renderAll();
   return true;
 }
@@ -438,6 +504,12 @@ function deleteUserTurn(messageId) {
   const next = [...session.messages];
   next.splice(index, 1);
   while (index < next.length && next[index]?.role === "assistant") {
+    const job = state.researchJobs.get(next[index].id);
+    if (job) {
+      job.stopRequested = true;
+      job.controller?.abort();
+      completeResearchJob(job);
+    }
     delete state.traceOpenById[next[index].id];
     next.splice(index, 1);
   }
@@ -449,9 +521,14 @@ function deleteUserTurn(messageId) {
 
 function deleteAssistantMessage(messageId) {
   const session = activeSession();
+  const job = state.researchJobs.get(messageId);
+  if (job) {
+    job.stopRequested = true;
+    job.controller?.abort();
+    completeResearchJob(job);
+  }
   session.messages = session.messages.filter((item) => item.id !== messageId);
   delete state.traceOpenById[messageId];
-  if (state.pendingAssistantId === messageId) state.pendingAssistantId = null;
   session.updatedAt = now();
   saveSessions();
   renderAll();
@@ -953,7 +1030,7 @@ function renderMessage(message) {
     highlightQueryInElement(content, state.sessionSearchTarget.query);
   }
 
-  if (message.role === "assistant" && message.id === state.pendingAssistantId && !message.done) {
+  if (message.role === "assistant" && isMessagePending(message)) {
     const spinner = document.createElement("span");
     spinner.className = "message-spinner";
     spinner.setAttribute("aria-hidden", "true");
@@ -1003,7 +1080,7 @@ function renderMessageActions(message) {
     );
   }
   if (message.role !== "assistant") {
-    row.appendChild(createMessageAction("↻", "重新发送", () => resendQuestion(message), state.running));
+    row.appendChild(createMessageAction("↻", "重新发送", () => resendQuestion(message), isSessionRunning(state.activeId)));
   }
   return row;
 }
@@ -1035,7 +1112,7 @@ function editQuestion(message) {
 }
 
 async function resendQuestion(message) {
-  if (state.running) return;
+  if (isSessionRunning(state.activeId)) return;
   const question = $("#question");
   question.value = String(message.content || "").trim();
   state.attachments = Array.isArray(message.attachments) ? [...message.attachments] : [];
@@ -1104,7 +1181,7 @@ function renderTraceDetails(message) {
   const trace = message.trace || [];
   const details = document.createElement("details");
   details.className = "trace-details";
-  details.open = state.traceOpenById[message.id] ?? (message.id === state.pendingAssistantId && !message.done);
+  details.open = state.traceOpenById[message.id] ?? isMessagePending(message);
   details.addEventListener("toggle", () => {
     state.traceOpenById[message.id] = details.open;
   });
@@ -1208,44 +1285,69 @@ function updateActiveQuestionMarker() {
   setActiveQuestion(active.dataset.questionId);
 }
 
-function pendingAssistant() {
-  const session = activeSession();
-  return session.messages.find((item) => item.id === state.pendingAssistantId);
+function pendingAssistant(job = activeResearchJob()) {
+  if (!job) return null;
+  return findAssistantMessage(job.sessionId, job.assistantId);
 }
 
-function updateAssistantMessage(text) {
-  const message = pendingAssistant();
+function updateAssistantMessage(job, text) {
+  if (typeof job === "string") {
+    text = job;
+    job = activeResearchJob();
+  }
+  const message = pendingAssistant(job);
   if (!message) return;
   message.content = text;
   message.updatedAt = now();
-  activeSession().updatedAt = now();
+  const session = findSession(job.sessionId);
+  if (session) session.updatedAt = now();
   saveSessions();
-  renderMessages();
+  renderAfterSessionUpdate(job.sessionId);
 }
 
-function finishAssistantMessage(text) {
-  const message = pendingAssistant();
-  if (!message) return;
+function finishAssistantMessage(job, text) {
+  if (typeof job === "string") {
+    text = job;
+    job = activeResearchJob();
+  }
+  const message = pendingAssistant(job);
+  if (!message) {
+    completeResearchJob(job);
+    return;
+  }
   message.content = text;
   message.done = true;
   message.updatedAt = now();
-  activeSession().updatedAt = now();
-  state.pendingAssistantId = null;
+  const session = findSession(job.sessionId);
+  if (session) session.updatedAt = now();
+  completeResearchJob(job);
   saveSessions();
-  renderMessages();
+  renderAfterSessionUpdate(job.sessionId);
 }
 
-function addTrace(kind, title, detail, extras = [], sources = []) {
-  const message = pendingAssistant();
+function addTrace(job, kind, title, detail, extras = [], sources = []) {
+  if (typeof job === "string") {
+    sources = extras;
+    extras = detail;
+    detail = title;
+    title = kind;
+    kind = job;
+    job = activeResearchJob();
+  }
+  const message = pendingAssistant(job);
   if (!message) return;
   message.trace ||= [];
   message.trace.push({ kind, title, detail, extras, sources, at: now() });
   saveSessions();
-  renderMessages();
+  renderAfterSessionUpdate(job.sessionId);
 }
 
-function updateReadProgressTrace(data) {
-  const message = pendingAssistant();
+function updateReadProgressTrace(job, data) {
+  if (!data) {
+    data = job;
+    job = activeResearchJob();
+  }
+  const message = pendingAssistant(job);
   if (!message) return;
   message.trace ||= [];
   let item = message.trace.find((entry) => entry.kind === "read-progress" && entry.round === data.round);
@@ -1294,7 +1396,7 @@ function updateReadProgressTrace(data) {
     : `已处理 ${completed}/${total} 个页面，成功 ${okCount} 个，跳过 ${failedCount} 个。`;
   item.updatedAt = now();
   saveSessions();
-  renderMessages();
+  renderAfterSessionUpdate(job.sessionId);
 }
 
 async function readAttachments(files) {
@@ -1320,32 +1422,41 @@ function renderAttachmentList() {
 }
 
 function setRunning(value) {
-  state.running = value;
-  $("#chatModeButton").disabled = value;
-  $("#researchModeButton").disabled = value;
-  $("#runButton").disabled = false;
-  $("#runButton").classList.toggle("running", value);
-  $("#runButton").textContent = value ? "Stop" : state.responseMode === "research" ? "Research" : "Send";
+  state.running = Boolean(value);
+  updateRunControls();
 }
 
 function stopCurrentResearch() {
-  if (!state.running) return;
-  state.stopRequested = true;
-  state.abortController?.abort();
-  const message = pendingAssistant();
+  const job = activeResearchJob();
+  if (!job) return;
+  job.stopRequested = true;
+  job.controller?.abort();
+  const message = pendingAssistant(job);
   if (message && !message.done) {
     message.content = "已手动停止当前研究。可以切换模型后重新发送。";
     message.done = true;
     message.updatedAt = now();
-    activeSession().updatedAt = now();
-    state.pendingAssistantId = null;
+    const session = findSession(job.sessionId);
+    if (session) session.updatedAt = now();
     saveSessions();
-    renderMessages();
+    renderAfterSessionUpdate(job.sessionId);
   }
-  setRunning(false);
+  completeResearchJob(job);
 }
 
-async function parseSse(response) {
+function processSseChunk(chunk, job) {
+  const event = chunk.match(/^event:\s*(.+)$/m)?.[1];
+  const raw = [...chunk.matchAll(/^data:\s?(.*)$/gm)].map((match) => match[1]).join("\n");
+  if (!event || !raw) return;
+  handleResearchEvent(job, event, JSON.parse(raw));
+}
+
+async function parseSse(response, job = activeResearchJob()) {
+  if (!response.ok) {
+    const detail = response.text ? await response.text().catch(() => "") : "";
+    throw new Error(detail || `Request failed with HTTP ${response.status || "error"}`);
+  }
+  if (!response.body?.getReader) throw new Error("Research response did not include a readable stream.");
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -1356,26 +1467,31 @@ async function parseSse(response) {
     const chunks = buffer.split("\n\n");
     buffer = chunks.pop() || "";
     for (const chunk of chunks) {
-      const event = chunk.match(/^event: (.+)$/m)?.[1];
-      const raw = chunk.match(/^data: (.+)$/m)?.[1];
-      if (!event || !raw) continue;
-      handleResearchEvent(event, JSON.parse(raw));
+      processSseChunk(chunk, job);
     }
   }
+  buffer += decoder.decode();
+  if (buffer.trim()) processSseChunk(buffer, job);
 }
 
-function handleResearchEvent(event, data) {
+function handleResearchEvent(job, event, data) {
+  if (typeof job === "string") {
+    data = event;
+    event = job;
+    job = activeResearchJob();
+  }
   if (event === "phase") {
-    addTrace("phase", data.label, data.detail);
-    updateAssistantMessage(`${data.label}\n\n${data.detail || ""}`.trim());
+    addTrace(job, "phase", data.label, data.detail);
+    updateAssistantMessage(job, `${data.label}\n\n${data.detail || ""}`.trim());
     return;
   }
   if (event === "plan") {
     const normal = (data.queries || []).map((query) => `常规：${query}`);
     const adversarial = (data.adversarialQueries || []).map((query) => `对抗：${query}`);
-    addTrace("plan", `第 ${data.round} 轮查询计划`, data.intent || data.queryCountReason || "", [...normal, ...adversarial]);
+    addTrace(job, "plan", `第 ${data.round} 轮查询计划`, data.intent || data.queryCountReason || "", [...normal, ...adversarial]);
     if (data.reasoningSummary || data.mustVerify?.length) {
       addTrace(
+        job,
         "thinking",
         `第 ${data.round} 轮检索思路`,
         data.reasoningSummary || "",
@@ -1383,6 +1499,7 @@ function handleResearchEvent(event, data) {
       );
     }
     updateAssistantMessage(
+      job,
       [
         `第 ${data.round} 轮研究中`,
         "",
@@ -1394,33 +1511,34 @@ function handleResearchEvent(event, data) {
     return;
   }
   if (event === "search") {
-    addTrace("search", `第 ${data.round} 轮搜索结果`, `找到 ${data.count} 条候选结果。`, (data.results || []).map((r) => r.title || r.url));
+    addTrace(job, "search", `第 ${data.round} 轮搜索结果`, `找到 ${data.count} 条候选结果。`, (data.results || []).map((r) => r.title || r.url));
     return;
   }
   if (event === "read-progress") {
-    updateReadProgressTrace(data);
+    updateReadProgressTrace(job, data);
     const completed = data.timedOut ? data.total : data.completed;
     const status = data.timedOut
       ? `本轮阅读达到安全时间，已处理 ${completed}/${data.total} 个候选页面。`
       : `阅读进度：${completed}/${data.total} 个候选页面。`;
-    updateAssistantMessage([`第 ${data.round} 轮阅读`, "", status].filter(Boolean).join("\n"));
+    updateAssistantMessage(job, [`第 ${data.round} 轮阅读`, "", status].filter(Boolean).join("\n"));
     return;
   }
   if (event === "evidence") {
     const stats = data.pageStats
       ? `本轮尝试 ${data.pageStats.attempted} 页，成功 ${data.pageStats.succeeded} 页，失败 ${data.pageStats.failed} 页。`
       : "";
-    addTrace("evidence", `第 ${data.round} 轮证据更新`, `累计保留 ${data.evidence?.length || 0} 条高相关证据。${stats}`, [], data.evidence || []);
+    addTrace(job, "evidence", `第 ${data.round} 轮证据更新`, `累计保留 ${data.evidence?.length || 0} 条高相关证据。${stats}`, [], data.evidence || []);
     return;
   }
   if (event === "gaps") {
     const label = data.enough ? "证据充分" : "继续补洞";
     const detail = data.enough ? `进入综合阶段。${data.reason || ""}` : `还需要补充：${data.reason || ""}`;
-    addTrace("gaps", label, detail, data.gaps || []);
+    addTrace(job, "gaps", label, detail, data.gaps || []);
     if (data.reasoningSummary) {
-      addTrace("thinking", `第 ${data.round} 轮判断依据`, data.reasoningSummary, data.gaps || []);
+      addTrace(job, "thinking", `第 ${data.round} 轮判断依据`, data.reasoningSummary, data.gaps || []);
     }
     updateAssistantMessage(
+      job,
       [
         `第 ${data.round} 轮研究小结`,
         "",
@@ -1433,7 +1551,7 @@ function handleResearchEvent(event, data) {
     return;
   }
   if (event === "final") {
-    const message = pendingAssistant();
+    const message = pendingAssistant(job);
     if (message) {
       message.researchContext = {
         mode: data.directAnswerOnly ? "direct-answer" : "research",
@@ -1442,11 +1560,11 @@ function handleResearchEvent(event, data) {
         trace: Array.isArray(data.trace) ? data.trace : [],
       };
     }
-    finishAssistantMessage(data.answer);
+    finishAssistantMessage(job, data.answer);
     return;
   }
   if (event === "error") {
-    finishAssistantMessage(`出错：${data.message}`);
+    finishAssistantMessage(job, `出错：${data.message}`);
   }
 }
 
@@ -1522,11 +1640,11 @@ $("#question").addEventListener("keydown", (event) => {
   if (event.isComposing) return;
   if (event.key !== "Enter" || event.shiftKey) return;
   event.preventDefault();
-  if (state.running) return;
+  if (isSessionRunning(state.activeId)) return;
   $("#taskForm").requestSubmit();
 });
 $("#runButton").addEventListener("click", (event) => {
-  if (!state.running) return;
+  if (!activeResearchJob()) return;
   event.preventDefault();
   stopCurrentResearch();
 });
@@ -1549,7 +1667,7 @@ $("#messages").addEventListener("scroll", updateActiveQuestionMarker);
 
 $("#taskForm").addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (state.running) return;
+  if (isSessionRunning(state.activeId)) return;
   saveConfig();
   const question = $("#question").value.trim();
   if (!question) return;
@@ -1568,16 +1686,13 @@ $("#taskForm").addEventListener("submit", async (event) => {
     createdAt: now(),
   });
   session.updatedAt = now();
-  state.pendingAssistantId = assistantId;
+  const controller = new AbortController();
+  const job = beginResearchJob(session.id, assistantId, controller, submitMode);
   state.attachments = [];
   $("#attachFile").value = "";
   saveSessions();
   renderAll();
   $("#question").value = "";
-  const controller = new AbortController();
-  state.abortController = controller;
-  state.stopRequested = false;
-  setRunning(true);
 
   const payload = {
     mode: submitMode,
@@ -1603,18 +1718,23 @@ $("#taskForm").addEventListener("submit", async (event) => {
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
-    await parseSse(response);
+    await parseSse(response, job);
   } catch (error) {
-    if (error.name === "AbortError" || state.stopRequested) {
-      if (state.pendingAssistantId) finishAssistantMessage("已手动停止当前研究。可以切换模型后重新发送。");
+    if (error.name === "AbortError" || job.stopRequested) {
+      if (state.researchJobs.get(job.assistantId) === job) {
+        finishAssistantMessage(job, "已手动停止当前研究。可以切换模型后重新发送。");
+      }
     } else {
-      handleResearchEvent("error", { message: error.message });
+      handleResearchEvent(job, "error", { message: error.message });
     }
   } finally {
-    if (state.abortController === controller) {
-      state.abortController = null;
-      state.stopRequested = false;
-      setRunning(false);
+    if (state.researchJobs.get(job.assistantId) === job) {
+      const message = pendingAssistant(job);
+      if (message && !message.done) {
+        finishAssistantMessage(job, "研究连接已结束，但没有收到最终回答。请重试或检查模型/API 配置。");
+      } else {
+        completeResearchJob(job);
+      }
     }
     saveSessions();
     renderAll();

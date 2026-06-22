@@ -3,7 +3,12 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import vm from "node:vm";
 
+async function readIndexHtml() {
+  return readFile(new URL("../public/index.html", import.meta.url), "utf8");
+}
+
 function element(value = "") {
+  const classes = new Set();
   return {
     value,
     textContent: "",
@@ -12,9 +17,30 @@ function element(value = "") {
     disabled: false,
     title: "",
     className: "",
+    scrollHeight: 0,
+    scrollTop: 0,
+    clientHeight: 0,
+    offsetTop: 0,
     type: "button",
     children: [],
     attributes: new Map(),
+    classList: {
+      add(name) {
+        classes.add(name);
+      },
+      remove(name) {
+        classes.delete(name);
+      },
+      toggle(name, force) {
+        const enabled = force === undefined ? !classes.has(name) : Boolean(force);
+        if (enabled) classes.add(name);
+        else classes.delete(name);
+        return enabled;
+      },
+      contains(name) {
+        return classes.has(name);
+      },
+    },
     append(...items) {
       this.children.push(...items);
     },
@@ -23,6 +49,13 @@ function element(value = "") {
       return item;
     },
     addEventListener() {},
+    querySelector() {
+      return null;
+    },
+    querySelectorAll() {
+      return [];
+    },
+    scrollTo() {},
     setAttribute(name, value) {
       this.attributes.set(name, String(value));
     },
@@ -50,6 +83,11 @@ async function loadHarness(config = {}) {
     "modelPreset",
     "customPresetName",
     "sessions",
+    "messages",
+    "questionNav",
+    "attachmentList",
+    "attachFile",
+    "taskForm",
   ]) {
     elements.set(id, element());
   }
@@ -80,6 +118,7 @@ async function loadHarness(config = {}) {
     Set,
     String,
     URL,
+    TextDecoder,
     console,
     document,
     localStorage: {
@@ -95,6 +134,17 @@ async function loadHarness(config = {}) {
       alert(message) {
         throw new Error(`Unexpected alert: ${message}`);
       },
+      renderMathInElement: null,
+    },
+    CSS: {
+      escape(value) {
+        return String(value);
+      },
+    },
+    NodeFilter: {
+      SHOW_TEXT: 4,
+      FILTER_REJECT: 2,
+      FILTER_ACCEPT: 1,
     },
   });
 
@@ -104,11 +154,16 @@ async function loadHarness(config = {}) {
 globalThis.__appTest = {
   state,
   applyPreset,
+  beginResearchJob: typeof beginResearchJob === "function" ? beginResearchJob : undefined,
   createSession,
   deleteSession,
+  findAssistantMessage: typeof findAssistantMessage === "function" ? findAssistantMessage : undefined,
+  handleResearchEvent,
+  parseSse,
   saveCustomPreset,
   saveConfig,
   selectPresetForCurrentConfig,
+  stopCurrentResearch,
 };
 `,
     context
@@ -176,6 +231,107 @@ test("saving a new custom preset does not overwrite the selected builtin API key
   app.saveCustomPreset();
 
   assert.equal(app.state.modelPresetApiKeys["builtin-1"], "deepseek-key");
+});
+
+test("settings save button does not submit the dialog form", async () => {
+  const html = await readIndexHtml();
+  assert.match(html, /<button[^>]+id="saveSettings"[^>]+type="button"/);
+});
+
+test("research jobs are tracked independently per session", async () => {
+  const { app } = await loadHarness();
+  assert.equal(typeof app.beginResearchJob, "function");
+  app.state.sessions = [
+    {
+      id: "one",
+      title: "One",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      messages: [{ id: "a-one", role: "assistant", content: "Working", createdAt: "2026-01-01T00:00:00.000Z" }],
+    },
+    {
+      id: "two",
+      title: "Two",
+      createdAt: "2026-01-02T00:00:00.000Z",
+      updatedAt: "2026-01-02T00:00:00.000Z",
+      messages: [{ id: "a-two", role: "assistant", content: "Working", createdAt: "2026-01-02T00:00:00.000Z" }],
+    },
+  ];
+  const firstController = { aborted: false, abort() { this.aborted = true; } };
+  const secondController = { aborted: false, abort() { this.aborted = true; } };
+  app.beginResearchJob("one", "a-one", firstController, "research");
+  app.beginResearchJob("two", "a-two", secondController, "research");
+
+  app.state.activeId = "two";
+  app.stopCurrentResearch();
+
+  assert.equal(firstController.aborted, false);
+  assert.equal(secondController.aborted, true);
+  assert.equal(app.state.sessions[0].messages[0].done, undefined);
+  assert.equal(app.state.sessions[1].messages[0].done, true);
+});
+
+test("research events update their original session even after switching sessions", async () => {
+  const { app } = await loadHarness();
+  app.state.sessions = [
+    {
+      id: "one",
+      title: "One",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      messages: [{ id: "a-one", role: "assistant", content: "Working", createdAt: "2026-01-01T00:00:00.000Z" }],
+    },
+    {
+      id: "two",
+      title: "Two",
+      createdAt: "2026-01-02T00:00:00.000Z",
+      updatedAt: "2026-01-02T00:00:00.000Z",
+      messages: [],
+    },
+  ];
+  const job = app.beginResearchJob("one", "a-one", { abort() {} }, "research");
+
+  app.state.activeId = "two";
+  app.handleResearchEvent(job, "final", { answer: "Done", evidence: [], trace: [] });
+
+  assert.equal(app.state.sessions[0].messages[0].content, "Done");
+  assert.equal(app.state.sessions[0].messages[0].done, true);
+  assert.equal(app.state.sessions[1].messages.length, 0);
+});
+
+test("SSE parser flushes a final event without a trailing blank line", async () => {
+  const { app } = await loadHarness();
+  app.state.sessions = [
+    {
+      id: "one",
+      title: "One",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      messages: [{ id: "a-one", role: "assistant", content: "Working", createdAt: "2026-01-01T00:00:00.000Z" }],
+    },
+  ];
+  const job = app.beginResearchJob("one", "a-one", { abort() {} }, "research");
+  const encoded = new TextEncoder().encode('event: final\ndata: {"answer":"Done","evidence":[],"trace":[]}');
+  const response = {
+    ok: true,
+    body: {
+      getReader() {
+        let sent = false;
+        return {
+          async read() {
+            if (sent) return { done: true };
+            sent = true;
+            return { done: false, value: encoded };
+          },
+        };
+      },
+    },
+  };
+
+  await app.parseSse(response, job);
+
+  assert.equal(app.state.sessions[0].messages[0].content, "Done");
+  assert.equal(app.state.sessions[0].messages[0].done, true);
 });
 
 test("deleting the active session selects a remaining session", async () => {

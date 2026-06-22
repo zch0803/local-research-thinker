@@ -160,6 +160,15 @@ const STOP_WORDS = new Set(
   "the a an and or of to in for on with by from about into over after before is are was were be been being as at that this these those it its their his her our your you we they i what which who whom when where why how can could should would may might 的 了 和 是 在 对 与 及 或 一个 一种 哪些 什么 如何 为什么 请 帮 我 这个 那个".split(/\s+/)
 );
 
+const FINAL_CITATION_INSTRUCTIONS = [
+  "Final citation rules:",
+  "Every factual claim derived from retrieval evidence MUST include an inline citation immediately after the sentence or clause, using evidence ids like [1] or [2].",
+  "Do not place citations only in a final bibliography; body conclusions must be marked where the evidence is used.",
+  "End with a section titled \"References used\" (or the user's language equivalent, for example \"参考文献\") listing every cited source.",
+  "Only include sources that are cited in the answer body; include each source id, title, and URL.",
+  "If evidence does not support a claim, label it as uncertain instead of citing an unrelated source.",
+].join("\n");
+
 function sendJson(res, status, payload) {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(payload));
@@ -845,6 +854,8 @@ function fallbackAnswerFromEvidence(error, evidence = []) {
     "",
     "下面先返回已检索到的证据摘要，避免本次研究结果丢失：",
     "",
+    "参考文献（已检索证据）:",
+    "",
     ...cited.map((item) => [
       `[${item.id}] ${item.title}`,
       item.url,
@@ -900,6 +911,8 @@ async function synthesize(config, question, evidence, trace, messages, signal) {
     return [
       "未配置大模型 API，所以这里只返回检索证据摘要。",
       "",
+      "参考文献（已检索证据）:",
+      "",
       ...cited.map((e) => `[${e.id}] ${e.title}\n${e.url}\n${e.passages?.[0] || ""}`),
     ].join("\n");
   }
@@ -907,7 +920,7 @@ async function synthesize(config, question, evidence, trace, messages, signal) {
   return callLLM({ ...config, maxTokens: Number(config.maxTokens || DEFAULTS.maxTokens) }, [
     {
       role: "system",
-      content: `You are a careful local deep-research agent. Answer in the user's language. Use supplied evidence for factual claims and cite sources as [1], [2]. If evidence is incomplete, say what is missing. Be complete rather than terse when the question is broad. Thinking mode is ${config.thinkingMode ? "deep: include stronger caveats and verification details" : "balanced"}.`,
+      content: `You are a careful local deep-research agent. Answer in the user's language. Use supplied evidence for factual claims. If evidence is incomplete, say what is missing. Be complete rather than terse when the question is broad. Thinking mode is ${config.thinkingMode ? "deep: include stronger caveats and verification details" : "balanced"}.\n\n${FINAL_CITATION_INSTRUCTIONS}`,
     },
     {
       role: "user",
@@ -920,7 +933,9 @@ async function synthesize(config, question, evidence, trace, messages, signal) {
         JSON.stringify(compactTrace, null, 2) +
         "\n\nEvidence:\n" +
         JSON.stringify(cited, null, 2) +
-        "\n\nWrite the final answer with citations and a short verification note.",
+        "\n\n" +
+        FINAL_CITATION_INSTRUCTIONS +
+        "\n\nWrite the final answer with inline citations, a short verification note, and a References used section.",
     },
   ], "", { timeoutMs: LLM_FINAL_TIMEOUT_MS, signal });
 }
