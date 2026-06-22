@@ -1,4 +1,4 @@
-import http from "node:http";
+﻿import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -157,7 +157,7 @@ const LLM_FINAL_TIMEOUT_MS = 120_000;
 const LLM_MAX_RESPONSE_CHARS = 2_000_000;
 
 const STOP_WORDS = new Set(
-  "the a an and or of to in for on with by from about into over after before is are was were be been being as at that this these those it its their his her our your you we they i what which who whom when where why how can could should would may might 的 了 和 是 在 对 与 及 或 一个 一种 哪些 什么 如何 为什么 请 帮 我 这个 那个".split(/\s+/)
+  "the a an and or of to in for on with by from about into over after before is are was were be been being as at that this these those it its their his her our your you we they i what which who whom when where why how can could should would may might 鐨?浜?鍜?鏄?鍦?瀵?涓?鍙?鎴?涓€涓?涓€绉?鍝簺 浠€涔?濡備綍 涓轰粈涔?璇?甯?鎴?杩欎釜 閭ｄ釜".split(/\s+/)
 );
 
 const FINAL_CITATION_INSTRUCTIONS = [
@@ -168,6 +168,10 @@ const FINAL_CITATION_INSTRUCTIONS = [
   "Only include sources that are cited in the answer body; include each source id, title, and URL.",
   "If evidence does not support a claim, label it as uncertain instead of citing an unrelated source.",
 ].join("\n");
+
+const STATIC_HEADERS = {
+  "cache-control": "no-store",
+};
 
 function sendJson(res, status, payload) {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
@@ -269,7 +273,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 18000) {
       ...options,
       signal,
       headers: {
-        "user-agent": "Mozilla/5.0 (compatible; LocalMiroThinker/0.2; +http://localhost)",
+        "user-agent": "Mozilla/5.0 (compatible; LocalResearchAgent/0.2; +http://localhost)",
         ...(options.headers || {}),
       },
     });
@@ -304,7 +308,7 @@ async function fetchTextWithTimeout(url, options = {}, timeoutMs = 18000, maxCha
       ...options,
       signal,
       headers: {
-        "user-agent": "Mozilla/5.0 (compatible; LocalMiroThinker/0.2; +http://localhost)",
+        "user-agent": "Mozilla/5.0 (compatible; LocalResearchAgent/0.2; +http://localhost)",
         ...(options.headers || {}),
       },
     });
@@ -374,7 +378,7 @@ async function fetchRawWithTimeout(url, options = {}, timeoutMs = LLM_TIMEOUT_MS
         ...options,
         signal,
         headers: {
-          "user-agent": "Mozilla/5.0 (compatible; LocalMiroThinker/0.2; +http://localhost)",
+          "user-agent": "Mozilla/5.0 (compatible; LocalResearchAgent/0.2; +http://localhost)",
           ...(options.headers || {}),
         },
       }),
@@ -481,7 +485,7 @@ function attachmentContext(attachments = []) {
 }
 
 function detectAcademicIntent(question) {
-  return /pubmed|pmid|doi|论文|文献|临床|meta[- ]?analysis|systematic review|trial|cohort|研究|biomarker|protein|gene|disease/i.test(question);
+  return /pubmed|pmid|doi|璁烘枃|鏂囩尞|涓村簥|meta[- ]?analysis|systematic review|trial|cohort|鐮旂┒|biomarker|protein|gene|disease/i.test(question);
 }
 
 function heuristicQueries(question, round, gaps = [], context = "") {
@@ -501,7 +505,7 @@ function heuristicQueries(question, round, gaps = [], context = "") {
     queries.push(`${base} site:edu OR site:gov`);
   }
   if (/[\u4e00-\u9fff]/.test(base)) {
-    queries.push(`${base} 资料 来源`, `${base} 官方 数据`);
+    queries.push(`${base} 璧勬枡 鏉ユ簮`, `${base} 瀹樻柟 鏁版嵁`);
   }
   if (round > 1) {
     for (const gap of gaps.slice(0, 5)) queries.push(`${base} ${gap}`);
@@ -523,8 +527,8 @@ function heuristicAdversarialQueries(question, gaps = [], context = "") {
     queries.push(`${base} systematic review limitations`);
   }
   if (/[\u4e00-\u9fff]/.test(base)) {
-    queries.push(`${base} 争议 反证`);
-    queries.push(`${base} 局限 质疑`);
+    queries.push(`${base} 浜夎 鍙嶈瘉`);
+    queries.push(`${base} 灞€闄?璐ㄧ枒`);
   }
   for (const gap of gaps.slice(0, 3)) queries.push(`${base} ${gap} counter evidence`);
   return uniqueBy(queries, (x) => x.toLowerCase()).slice(0, 3);
@@ -819,6 +823,26 @@ function compactEvidenceForModel(evidence = [], options = {}) {
   }));
 }
 
+function compactEvidenceForClient(evidence = []) {
+  return evidence.map((item, index) => {
+    const passages = (item.passages || [])
+      .slice(0, 3)
+      .map((passage) => String(passage || "").slice(0, 900))
+      .filter(Boolean);
+    const compact = {
+      id: item.id || index + 1,
+      title: String(item.title || item.url || "Source").slice(0, 220),
+      url: String(item.url || "").slice(0, 1200),
+      query: String(item.query || "").slice(0, 240),
+      snippet: String(item.snippet || "").slice(0, 600),
+      passages,
+    };
+    if (item.source) compact.source = String(item.source).slice(0, 80);
+    if (Number.isFinite(Number(item.score))) compact.score = Number(item.score);
+    return compact;
+  });
+}
+
 function compactTraceForModel(trace = [], options = {}) {
   const maxRounds = Number(options.maxRounds || 8);
   return trace.slice(-maxRounds).map((item) => ({
@@ -1014,7 +1038,7 @@ async function research(payload, emit, signal) {
       if (error?.name === "AbortError") throw error;
       answer = fallbackAnswerFromEvidence(error, evidence);
     }
-    emit("final", { answer, trace, evidence: evidence.slice(0, 18), directAnswerOnly: true });
+    emit("final", { answer, trace, evidence: compactEvidenceForClient(evidence.slice(0, 18)), directAnswerOnly: true });
     return;
   }
 
@@ -1049,7 +1073,7 @@ async function research(payload, emit, signal) {
       .slice(0, 40);
     emit("evidence", {
       round,
-      evidence: evidence.slice(0, 14),
+      evidence: compactEvidenceForClient(evidence.slice(0, 14)),
       pageStats: {
         attempted: rankedResults.length,
         succeeded: pages.filter((p) => p.ok).length,
@@ -1084,7 +1108,7 @@ async function research(payload, emit, signal) {
     if (error?.name === "AbortError") throw error;
     answer = fallbackAnswerFromEvidence(error, evidence);
   }
-  emit("final", { answer, trace, evidence: evidence.slice(0, 18), directAnswerOnly: false });
+  emit("final", { answer, trace, evidence: compactEvidenceForClient(evidence.slice(0, 18)), directAnswerOnly: false });
 }
 
 async function serveStatic(req, res) {
@@ -1097,7 +1121,7 @@ async function serveStatic(req, res) {
       return;
     }
     const data = await readFile(filePath);
-    res.writeHead(200, { "content-type": MIME[path.extname(filePath)] || "application/octet-stream" });
+    res.writeHead(200, { "content-type": MIME[path.extname(filePath)] || "application/octet-stream", ...STATIC_HEADERS });
     res.end(data);
     return;
   }
@@ -1109,7 +1133,7 @@ async function serveStatic(req, res) {
     return;
   }
   const data = await readFile(filePath);
-  res.writeHead(200, { "content-type": MIME[path.extname(filePath)] || "application/octet-stream" });
+  res.writeHead(200, { "content-type": MIME[path.extname(filePath)] || "application/octet-stream", ...STATIC_HEADERS });
   res.end(data);
 }
 
@@ -1153,5 +1177,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Local MiroThinker is running at http://localhost:${PORT}`);
+  console.log(`Local Research Agent is running at http://localhost:${PORT}`);
 });
+

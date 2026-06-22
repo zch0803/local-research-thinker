@@ -211,6 +211,7 @@ h2 {
   padding: 10px;
   background: transparent;
   color: var(--ink);
+  cursor: pointer;
 }
 
 .session-item:hover,

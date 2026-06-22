@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import vm from "node:vm";
@@ -9,6 +9,7 @@ async function readIndexHtml() {
 
 function element(value = "") {
   const classes = new Set();
+  const listeners = new Map();
   return {
     value,
     textContent: "",
@@ -44,11 +45,32 @@ function element(value = "") {
     append(...items) {
       this.children.push(...items);
     },
+    prepend(...items) {
+      this.children.unshift(...items);
+    },
     appendChild(item) {
       this.children.push(item);
       return item;
     },
-    addEventListener() {},
+    addEventListener(type, listener) {
+      const existing = listeners.get(type) || [];
+      existing.push(listener);
+      listeners.set(type, existing);
+    },
+    dispatchEvent(event) {
+      event.target ||= this;
+      event.currentTarget = this;
+      event.stopPropagation ||= () => {
+        event.cancelBubble = true;
+      };
+      for (const listener of listeners.get(event.type) || []) {
+        listener.call(this, event);
+      }
+      return !event.defaultPrevented;
+    },
+    click() {
+      this.dispatchEvent({ type: "click" });
+    },
     querySelector() {
       return null;
     },
@@ -67,6 +89,7 @@ function element(value = "") {
 
 async function loadHarness(config = {}) {
   const source = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const { failSessionWrites = false, ...storedConfig } = config;
   const elements = new Map();
   for (const id of [
     "llmBaseUrl",
@@ -94,8 +117,8 @@ async function loadHarness(config = {}) {
   elements.get("thinkingMode").setAttribute("aria-pressed", "false");
 
   const localStorageData = new Map([
-    ["local-mirothinker-config", JSON.stringify(config)],
-    ["local-mirothinker-sessions", "[]"],
+    ["local-research-agent-config", JSON.stringify(storedConfig)],
+    ["local-research-agent-sessions", "[]"],
   ]);
 
   const document = {
@@ -119,13 +142,16 @@ async function loadHarness(config = {}) {
     String,
     URL,
     TextDecoder,
-    console,
+    console: { ...console, warn() {} },
     document,
     localStorage: {
       getItem(key) {
         return localStorageData.get(key) ?? null;
       },
       setItem(key, value) {
+        if (failSessionWrites && key === "local-research-agent-sessions") {
+          throw new Error("QuotaExceededError");
+        }
         localStorageData.set(key, String(value));
       },
     },
@@ -160,9 +186,11 @@ globalThis.__appTest = {
   findAssistantMessage: typeof findAssistantMessage === "function" ? findAssistantMessage : undefined,
   handleResearchEvent,
   parseSse,
+  renderSessions,
   saveCustomPreset,
   saveConfig,
   selectPresetForCurrentConfig,
+  setActiveSession,
   stopCurrentResearch,
 };
 `,
@@ -236,6 +264,72 @@ test("saving a new custom preset does not overwrite the selected builtin API key
 test("settings save button does not submit the dialog form", async () => {
   const html = await readIndexHtml();
   assert.match(html, /<button[^>]+id="saveSettings"[^>]+type="button"/);
+});
+
+test("clicking anywhere on a history session card switches sessions", async () => {
+  const { app, elements } = await loadHarness();
+  app.state.sessions = [
+    { id: "one", title: "One", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", messages: [] },
+    { id: "two", title: "Two", createdAt: "2026-01-02T00:00:00.000Z", updatedAt: "2026-01-02T00:00:00.000Z", messages: [] },
+  ];
+  app.state.activeId = "one";
+
+  app.renderSessions();
+  const secondCard = elements.get("sessions").children[1];
+  secondCard.click();
+
+  assert.equal(app.state.activeId, "two");
+});
+
+test("session storage quota failures do not block research cleanup or switching sessions", async () => {
+  const { app } = await loadHarness({ failSessionWrites: true });
+  app.state.sessions = [
+    {
+      id: "one",
+      title: "One",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      messages: [{ id: "a-one", role: "assistant", content: "Working", trace: [], createdAt: "2026-01-01T00:00:00.000Z" }],
+    },
+    { id: "two", title: "Two", createdAt: "2026-01-02T00:00:00.000Z", updatedAt: "2026-01-02T00:00:00.000Z", messages: [] },
+  ];
+  app.state.activeId = "one";
+  const job = app.beginResearchJob("one", "a-one", { abort() {} }, "research");
+
+  assert.doesNotThrow(() => app.handleResearchEvent(job, "error", { message: "network closed" }));
+  assert.equal(app.state.researchJobs.has("a-one"), false);
+  assert.equal(app.findAssistantMessage("one", "a-one").done, true);
+
+  assert.doesNotThrow(() => app.setActiveSession("two"));
+  assert.equal(app.state.activeId, "two");
+});
+
+test("research evidence stored in session traces is compacted before persistence", async () => {
+  const { app } = await loadHarness();
+  app.state.sessions = [
+    {
+      id: "one",
+      title: "One",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      messages: [{ id: "a-one", role: "assistant", content: "Working", trace: [], createdAt: "2026-01-01T00:00:00.000Z" }],
+    },
+  ];
+  app.state.activeId = "one";
+  const job = app.beginResearchJob("one", "a-one", { abort() {} }, "research");
+  const hugeText = "x".repeat(50_000);
+
+  app.handleResearchEvent(job, "evidence", {
+    round: 2,
+    evidence: [{ id: 1, title: "Huge source", url: "https://example.com", text: hugeText, passages: [hugeText], snippet: hugeText }],
+    pageStats: { attempted: 1, succeeded: 1, failed: 0 },
+  });
+
+  const sources = app.findAssistantMessage("one", "a-one").trace.at(-1).sources;
+  assert.equal(sources.length, 1);
+  assert.equal("text" in sources[0], false);
+  assert.ok(sources[0].snippet.length <= 600);
+  assert.ok(sources[0].passages[0].length <= 900);
 });
 
 test("research jobs are tracked independently per session", async () => {
@@ -347,3 +441,4 @@ test("deleting the active session selects a remaining session", async () => {
   assert.deepEqual(app.state.sessions.map((session) => session.id), ["two"]);
   assert.equal(app.state.activeId, "two");
 });
+

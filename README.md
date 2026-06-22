@@ -1,6 +1,6 @@
-# Local MiroThinker
+﻿# Local Research Agent
 
-Local MiroThinker is a local web research agent inspired by the retrieval style of MiroThinker / MiroFlow. It runs as a lightweight local web app, supports public LLM APIs such as DeepSeek, Gemini, and other OpenAI-compatible endpoints, and focuses on retrieval strategy rather than just a single-pass answer.
+Local Research Agent is a local web research agent inspired by the retrieval style of multi-round research workflows. It runs as a lightweight local web app, supports public LLM APIs such as DeepSeek, Gemini, and other OpenAI-compatible endpoints, and focuses on retrieval strategy rather than just a single-pass answer.
 
 ## What This Project Tries To Do
 
@@ -264,9 +264,9 @@ powershell -ExecutionPolicy Bypass -File scripts\build-distribution.ps1
 
 Output:
 
-- folder: `dist\LocalMiroThinker`
-- zip: `dist\LocalMiroThinker-win-x64.zip`
-- launcher: `dist\LocalMiroThinker\LocalMiroThinkerLauncher.exe`
+- folder: `dist\LocalResearchAgent`
+- zip: `dist\LocalResearchAgent-win-x64.zip`
+- launcher: `dist\LocalResearchAgent\LocalResearchAgentLauncher.exe`
 
 The launcher bundles `node.exe`, so the target Windows machine usually does not need a separate Node.js installation.
 
@@ -293,3 +293,4 @@ If you want a short, clear English repository name, my recommendation is:
 `local-research-thinker`
 
 It is simple, descriptive, and closer to the product behavior than a generic name like `web-research-app`.
+

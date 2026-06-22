@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -6,7 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Windows.Forms;
 
-namespace LocalMiroThinkerLauncher
+namespace LocalResearchAgentLauncher
 {
     internal static class Program
     {
@@ -33,18 +33,18 @@ namespace LocalMiroThinkerLauncher
 
         public LauncherForm()
         {
-            Text = "Local MiroThinker Launcher";
+            Text = "Local Research Agent Launcher";
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
-            MinimizeBox = false;
+            MinimizeBox = true;
             ClientSize = new Size(420, 250);
             configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "launcher.config");
 
             var titleLabel = new Label
             {
                 AutoSize = false,
-                Text = "Local MiroThinker",
+                Text = "Local Research Agent",
                 Font = new Font("Segoe UI", 16f, FontStyle.Bold),
                 Location = new Point(24, 22),
                 Size = new Size(260, 32)
@@ -390,3 +390,4 @@ namespace LocalMiroThinkerLauncher
         }
     }
 }
+

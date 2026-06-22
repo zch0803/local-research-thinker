@@ -1,9 +1,9 @@
-const $ = (selector) => document.querySelector(selector);
+﻿const $ = (selector) => document.querySelector(selector);
 
 const storage = {
-  config: "local-mirothinker-config",
-  sessions: "local-mirothinker-sessions",
-  active: "local-mirothinker-active-session",
+  config: "local-research-agent-config",
+  sessions: "local-research-agent-sessions",
+  active: "local-research-agent-active-session",
 };
 
 const state = {
@@ -28,6 +28,17 @@ const state = {
 
 const fields = ["llmBaseUrl", "llmModel", "llmApiKey", "searchProvider", "serperApiKey", "tavilyApiKey"];
 
+const STORAGE_LIMITS = {
+  attachmentText: 0,
+  detail: 2400,
+  extra: 1200,
+  passage: 900,
+  query: 240,
+  snippet: 600,
+  title: 220,
+  url: 1200,
+};
+
 function now() {
   return new Date().toISOString();
 }
@@ -48,9 +59,95 @@ function cloneSessionWithFreshIds(session) {
   };
 }
 
+function truncateForStorage(value, limit) {
+  const text = String(value || "");
+  return text.length > limit ? `${text.slice(0, Math.max(0, limit - 3))}...` : text;
+}
+
+function compactEvidenceForStorage(item = {}) {
+  const passages = Array.isArray(item.passages)
+    ? item.passages.slice(0, 3).map((passage) => truncateForStorage(passage, STORAGE_LIMITS.passage)).filter(Boolean)
+    : [];
+  const compact = {
+    id: item.id,
+    title: truncateForStorage(item.title || item.url || "Source", STORAGE_LIMITS.title),
+    url: truncateForStorage(item.url || "", STORAGE_LIMITS.url),
+    query: truncateForStorage(item.query || "", STORAGE_LIMITS.query),
+    snippet: truncateForStorage(item.snippet || "", STORAGE_LIMITS.snippet),
+    passages,
+  };
+  if (item.source) compact.source = truncateForStorage(item.source, 80);
+  if (Number.isFinite(Number(item.score))) compact.score = Number(item.score);
+  return compact;
+}
+
+function compactTraceExtra(extra) {
+  if (typeof extra === "string") return truncateForStorage(extra, STORAGE_LIMITS.extra);
+  if (!extra || typeof extra !== "object") return extra;
+  return compactEvidenceForStorage(extra);
+}
+
+function compactTraceForStorage(trace = []) {
+  return (trace || []).slice(-60).map((item) => ({
+    ...item,
+    title: truncateForStorage(item.title || "", STORAGE_LIMITS.title),
+    detail: truncateForStorage(item.detail || "", STORAGE_LIMITS.detail),
+    extras: Array.isArray(item.extras) ? item.extras.slice(0, 16).map(compactTraceExtra) : [],
+    sources: Array.isArray(item.sources) ? item.sources.slice(0, 18).map(compactEvidenceForStorage) : [],
+    readItems: Array.isArray(item.readItems)
+      ? item.readItems.slice(0, 40).map((page) => ({
+          key: truncateForStorage(page.key || page.url || page.title || "", STORAGE_LIMITS.url),
+          title: truncateForStorage(page.title || page.url || "", STORAGE_LIMITS.title),
+          url: truncateForStorage(page.url || "", STORAGE_LIMITS.url),
+          ok: Boolean(page.ok),
+          error: truncateForStorage(page.error || "", 260),
+          timedOut: Boolean(page.timedOut),
+        }))
+      : undefined,
+  }));
+}
+
+function compactAttachmentsForStorage(attachments = []) {
+  return (attachments || []).map((file) => ({
+    name: file.name,
+    type: file.type,
+    size: file.size,
+    text: STORAGE_LIMITS.attachmentText ? truncateForStorage(file.text || "", STORAGE_LIMITS.attachmentText) : "",
+  }));
+}
+
+function compactResearchContextForStorage(context) {
+  if (!context) return null;
+  return {
+    ...context,
+    evidence: Array.isArray(context.evidence) ? context.evidence.slice(0, 18).map(compactEvidenceForStorage) : [],
+    trace: Array.isArray(context.trace) ? compactTraceForStorage(context.trace) : [],
+  };
+}
+
+function compactSessionsForStorage() {
+  return state.sessions.map((session) => ({
+    ...session,
+    messages: (session.messages || []).map((message) => ({
+      ...message,
+      attachments: compactAttachmentsForStorage(message.attachments || []),
+      trace: compactTraceForStorage(message.trace || []),
+      researchContext: compactResearchContextForStorage(message.researchContext),
+    })),
+  }));
+}
+
 function saveSessions() {
-  localStorage.setItem(storage.sessions, JSON.stringify(state.sessions));
-  localStorage.setItem(storage.active, state.activeId || "");
+  try {
+    localStorage.setItem(storage.sessions, JSON.stringify(compactSessionsForStorage()));
+  } catch (error) {
+    console.warn("Unable to persist sessions; keeping in-memory state.", error);
+  }
+  try {
+    localStorage.setItem(storage.active, state.activeId || "");
+  } catch (error) {
+    console.warn("Unable to persist active session id.", error);
+  }
 }
 
 function normalizeCustomPresets(presets = []) {
@@ -101,7 +198,7 @@ function rememberActivePresetApiKey() {
 
 function exportSessions() {
   const payload = {
-    format: "local-mirothinker.sessions.v1",
+    format: "local-research-agent.sessions.v1",
     exportedAt: now(),
     sessions: state.sessions,
   };
@@ -110,7 +207,7 @@ function exportSessions() {
   const link = document.createElement("a");
   const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
   link.href = url;
-  link.download = `local-mirothinker-sessions-${stamp}.json`;
+  link.download = `local-research-agent-sessions-${stamp}.json`;
   document.body.appendChild(link);
   link.click();
   link.remove();
@@ -895,10 +992,15 @@ function renderSessions() {
   for (const { session, matches } of sessions) {
     const card = document.createElement("div");
     card.className = `session-item${session.id === state.activeId ? " active" : ""}`;
+    const activateSession = () => setActiveSession(session.id, matches[0] || null);
+    card.addEventListener("click", activateSession);
     const button = document.createElement("button");
     button.className = "session-main";
     button.type = "button";
-    button.addEventListener("click", () => setActiveSession(session.id, matches[0] || null));
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      activateSession();
+    });
     const title = document.createElement("strong");
     title.textContent = session.title;
     const meta = document.createElement("span");
@@ -1066,9 +1168,9 @@ function renderMessageActions(message) {
       createMessageAction("⧉", "复制回答", async () => {
         await copyText(message.content || "");
       }),
-      createMessageAction("⇩", "导出为 Markdown", () => exportAnswerMarkdown(message)),
+      createMessageAction("↓", "导出为 Markdown", () => exportAnswerMarkdown(message)),
       createMessageAction("⌫", "删除检索过程", () => clearAssistantTrace(message.id), !message.trace?.length),
-      createMessageAction("✕", "删除回答", () => deleteAssistantMessage(message.id))
+      createMessageAction("×", "删除回答", () => deleteAssistantMessage(message.id))
     );
   } else {
     row.append(
@@ -1076,7 +1178,7 @@ function renderMessageActions(message) {
         await copyText(message.content || "");
       }),
       createMessageAction("✎", "修改并回填", () => editQuestion(message)),
-      createMessageAction("✕", "删除问题与对应回答", () => deleteUserTurn(message.id))
+      createMessageAction("×", "删除问题与对应回答", () => deleteUserTurn(message.id))
     );
   }
   if (message.role !== "assistant") {
@@ -1097,7 +1199,7 @@ function createMessageAction(icon, label, onClick, disabled = false) {
     try {
       await onClick();
     } catch (error) {
-      window.alert(error.message || "操作失败");
+      window.alert(error.message || "鎿嶄綔澶辫触");
     }
   });
   return button;
@@ -1124,7 +1226,7 @@ function exportAnswerMarkdown(message) {
   const session = activeSession();
   const index = Math.max(1, session.messages.filter((item) => item.role === "assistant").indexOf(message) + 1);
   const title = session.title || "session";
-  const content = `# ${title}\n\n## 回答 ${index}\n\n${message.content || ""}\n`;
+  const content = `# ${title}\n\n## 鍥炵瓟 ${index}\n\n${message.content || ""}\n`;
   downloadTextFile(`${sessionSlug(session)}-answer-${index}.md`, content, "text/markdown;charset=utf-8");
 }
 
@@ -1253,7 +1355,7 @@ function renderQuestionNav() {
     button.className = "question-line";
     button.type = "button";
     button.dataset.questionId = message.id;
-    button.title = `问题 ${index + 1}: ${message.content.slice(0, 80)}`;
+    button.title = `闂 ${index + 1}: ${message.content.slice(0, 80)}`;
     button.addEventListener("click", () => scrollToQuestion(message.id));
     nav.appendChild(button);
   }
@@ -1337,7 +1439,14 @@ function addTrace(job, kind, title, detail, extras = [], sources = []) {
   const message = pendingAssistant(job);
   if (!message) return;
   message.trace ||= [];
-  message.trace.push({ kind, title, detail, extras, sources, at: now() });
+  message.trace.push({
+    kind,
+    title: truncateForStorage(title, STORAGE_LIMITS.title),
+    detail: truncateForStorage(detail, STORAGE_LIMITS.detail),
+    extras: Array.isArray(extras) ? extras.slice(0, 16).map(compactTraceExtra) : [],
+    sources: Array.isArray(sources) ? sources.slice(0, 18).map(compactEvidenceForStorage) : [],
+    at: now(),
+  });
   saveSessions();
   renderAfterSessionUpdate(job.sessionId);
 }
@@ -1556,8 +1665,8 @@ function handleResearchEvent(job, event, data) {
       message.researchContext = {
         mode: data.directAnswerOnly ? "direct-answer" : "research",
         savedAt: now(),
-        evidence: Array.isArray(data.evidence) ? data.evidence : [],
-        trace: Array.isArray(data.trace) ? data.trace : [],
+        evidence: Array.isArray(data.evidence) ? data.evidence.slice(0, 18).map(compactEvidenceForStorage) : [],
+        trace: Array.isArray(data.trace) ? compactTraceForStorage(data.trace) : [],
       };
     }
     finishAssistantMessage(job, data.answer);
@@ -1598,7 +1707,7 @@ function handleEvent(event, data) {
 async function testApi() {
   saveConfig();
   const status = $("#apiTestStatus");
-  status.textContent = "测试中...";
+  status.textContent = "娴嬭瘯涓?..";
   status.dataset.state = "pending";
   try {
     const response = await fetch("/api/test-llm", {
@@ -1607,7 +1716,7 @@ async function testApi() {
       body: JSON.stringify({ config: state.config }),
     });
     const data = await response.json();
-    status.textContent = data.ok ? "连接成功" : data.message || "连接失败";
+    status.textContent = data.ok ? "杩炴帴鎴愬姛" : data.message || "杩炴帴澶辫触";
     status.dataset.state = data.ok ? "ok" : "bad";
   } catch (error) {
     status.textContent = error.message;
@@ -1742,3 +1851,4 @@ $("#taskForm").addEventListener("submit", async (event) => {
 });
 
 loadDefaults();
+

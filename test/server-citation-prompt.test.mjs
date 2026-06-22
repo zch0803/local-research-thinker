@@ -15,3 +15,18 @@ test("final research synthesis prompt requires inline citations and used referen
   assert.match(source, /References used/);
   assert.match(source, /Only include sources that are cited in the answer body/);
 });
+
+test("static app resources are served with no-store cache control", async () => {
+  const source = await readServer();
+
+  assert.match(source, /STATIC_HEADERS/);
+  assert.match(source, /"cache-control": "no-store"/);
+});
+
+test("research SSE payloads send compact evidence without full page text", async () => {
+  const source = await readServer();
+
+  assert.match(source, /function compactEvidenceForClient/);
+  assert.match(source, /evidence:\s*compactEvidenceForClient\(evidence\.slice\(0,\s*14\)\)/);
+  assert.match(source, /emit\("final", \{ answer, trace, evidence: compactEvidenceForClient\(evidence\.slice\(0,\s*18\)\)/);
+});

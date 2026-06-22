@@ -1,31 +1,23 @@
-# Local MiroThinker 部署指南
+﻿# Local Research Agent 閮ㄧ讲鎸囧崡
 
-这份文档说明如何把当前软件复制到另一台电脑上运行。项目是纯 Node.js 本地网页服务，不需要数据库，也不依赖 npm 第三方包。
+杩欎唤鏂囨。璇存槑濡備綍鎶婂綋鍓嶈蒋浠跺鍒跺埌鍙︿竴鍙扮數鑴戜笂杩愯銆傞」鐩槸绾?Node.js 鏈湴缃戦〉鏈嶅姟锛屼笉闇€瑕佹暟鎹簱锛屼篃涓嶄緷璧?npm 绗笁鏂瑰寘銆?
+## 1. 鍑嗗鐜
 
-## 1. 准备环境
+鐩爣鐢佃剳闇€瑕侊細
 
-目标电脑需要：
-
-- Node.js 18 或更高版本，建议 Node.js 20 LTS。
-- 能访问你选择的大模型 API，例如 DeepSeek、Gemini、OpenAI-compatible 服务。
-- 如果使用 DuckDuckGo HTML 搜索，需要能访问 DuckDuckGo。
-- 如果使用 Serper、Tavily，需要对应 API Key。
-
-检查 Node.js：
-
+- Node.js 18 鎴栨洿楂樼増鏈紝寤鸿 Node.js 20 LTS銆?- 鑳借闂綘閫夋嫨鐨勫ぇ妯″瀷 API锛屼緥濡?DeepSeek銆丟emini銆丱penAI-compatible 鏈嶅姟銆?- 濡傛灉浣跨敤 DuckDuckGo HTML 鎼滅储锛岄渶瑕佽兘璁块棶 DuckDuckGo銆?- 濡傛灉浣跨敤 Serper銆乀avily锛岄渶瑕佸搴?API Key銆?
+妫€鏌?Node.js锛?
 ```bash
 node -v
 npm -v
 ```
 
-如果没有安装 Node.js，到 https://nodejs.org/ 下载 LTS 版本。
+濡傛灉娌℃湁瀹夎 Node.js锛屽埌 https://nodejs.org/ 涓嬭浇 LTS 鐗堟湰銆?
+## 2. 鎷疯礉椤圭洰
 
-## 2. 拷贝项目
-
-把整个 `mirothinker` 文件夹复制到另一台电脑，例如：
-
+鎶婃暣涓?`Research Agent` 鏂囦欢澶瑰鍒跺埌鍙︿竴鍙扮數鑴戯紝渚嬪锛?
 ```text
-mirothinker/
+Research Agent/
   package.json
   server.js
   README.md
@@ -36,55 +28,42 @@ mirothinker/
     styles.css
 ```
 
-因为项目没有第三方 npm 依赖，通常不需要运行 `npm install`。
+鍥犱负椤圭洰娌℃湁绗笁鏂?npm 渚濊禆锛岄€氬父涓嶉渶瑕佽繍琛?`npm install`銆?
+## 3. 鍚姩鏈嶅姟
 
-## 3. 启动服务
-
-进入项目目录：
-
+杩涘叆椤圭洰鐩綍锛?
 ```bash
-cd mirothinker
+cd Research Agent
 npm start
 ```
 
-看到类似输出即可：
-
+鐪嬪埌绫讳技杈撳嚭鍗冲彲锛?
 ```text
-Local MiroThinker is running at http://localhost:5173
+Local Research Agent is running at http://localhost:5173
 ```
 
-浏览器打开：
-
+娴忚鍣ㄦ墦寮€锛?
 ```text
 http://localhost:5173
 ```
 
-## 3A. 使用图形启动器
+## 3A. 浣跨敤鍥惧舰鍚姩鍣?
+濡傛灉浣犳嬁鍒扮殑鏄凡缁忔墦鍖呭ソ鐨勫垎鍙戠洰褰曟垨鍘嬬缉鍖咃紝浼樺厛浣跨敤鍥惧舰鍚姩鍣細
 
-如果你拿到的是已经打包好的分发目录或压缩包，优先使用图形启动器：
+- 鍚姩鍣ㄨ矾寰勶細`LocalResearchAgentLauncher.exe`
+- 鍘嬬缉鍖呰矾寰勶細`LocalResearchAgent-win-x64.zip`
 
-- 启动器路径：`LocalMiroThinkerLauncher.exe`
-- 压缩包路径：`LocalMiroThinker-win-x64.zip`
-
-双击 `LocalMiroThinkerLauncher.exe` 后会出现一个小窗口，里面有：
-
+鍙屽嚮 `LocalResearchAgentLauncher.exe` 鍚庝細鍑虹幇涓€涓皬绐楀彛锛岄噷闈㈡湁锛?
 - `Start Service`
 - `Open App`
 - `Stop Service`
 
-这版启动器会优先使用分发包内附带的 `runtime/node.exe`，所以目标电脑通常不需要另装 Node.js。
+杩欑増鍚姩鍣ㄤ細浼樺厛浣跨敤鍒嗗彂鍖呭唴闄勫甫鐨?`runtime/node.exe`锛屾墍浠ョ洰鏍囩數鑴戦€氬父涓嶉渶瑕佸彟瑁?Node.js銆?
+## 4. 閰嶇疆妯″瀷
 
-## 4. 配置模型
-
-打开页面右上角设置按钮，可以配置：
-
-- 预设模型：DeepSeek v4 Flash、DeepSeek v4 Pro、Gemini Pro/Flash、OpenAI compatible、Custom。
-- Base URL：OpenAI-compatible API 地址。
-- Model：模型名。
-- API Key：模型服务密钥。
-
-常用示例：
-
+鎵撳紑椤甸潰鍙充笂瑙掕缃寜閽紝鍙互閰嶇疆锛?
+- 棰勮妯″瀷锛欴eepSeek v4 Flash銆丏eepSeek v4 Pro銆丟emini Pro/Flash銆丱penAI compatible銆丆ustom銆?- Base URL锛歄penAI-compatible API 鍦板潃銆?- Model锛氭ā鍨嬪悕銆?- API Key锛氭ā鍨嬫湇鍔″瘑閽ャ€?
+甯哥敤绀轰緥锛?
 ### DeepSeek
 
 ```text
@@ -92,7 +71,7 @@ Base URL: https://api.deepseek.com/v1
 Model: deepseek-v4-flash
 ```
 
-或：
+鎴栵細
 
 ```text
 Model: deepseek-v4-pro
@@ -105,25 +84,22 @@ Base URL: https://generativelanguage.googleapis.com/v1beta/openai/
 Model: gemini-3.1-pro
 ```
 
-或：
+鎴栵細
 
 ```text
 Model: gemini-3.5-flash
 ```
 
-如果你的账号或地区只开放了 Gemini 2.5，可以选择：
-
+濡傛灉浣犵殑璐﹀彿鎴栧湴鍖哄彧寮€鏀句簡 Gemini 2.5锛屽彲浠ラ€夋嫨锛?
 ```text
 Model: gemini-2.5-pro
 Model: gemini-2.5-flash
 ```
 
-配置后点击“测试 API”，显示连接成功后即可使用。
+閰嶇疆鍚庣偣鍑烩€滄祴璇?API鈥濓紝鏄剧ず杩炴帴鎴愬姛鍚庡嵆鍙娇鐢ㄣ€?
+## 5. 鐢ㄧ幆澧冨彉閲忛閰嶇疆
 
-## 5. 用环境变量预配置
-
-也可以用环境变量启动，适合服务器或固定部署。
-
+涔熷彲浠ョ敤鐜鍙橀噺鍚姩锛岄€傚悎鏈嶅姟鍣ㄦ垨鍥哄畾閮ㄧ讲銆?
 ### Windows PowerShell
 
 ```powershell
@@ -142,21 +118,15 @@ export DEEPSEEK_API_KEY="sk-..."
 npm start
 ```
 
-也可以使用通用变量：
-
+涔熷彲浠ヤ娇鐢ㄩ€氱敤鍙橀噺锛?
 ```bash
 export LLM_API_KEY="..."
 ```
 
-## 6. 搜索源配置
-
-默认搜索源是 DuckDuckGo HTML：
-
-- 不需要 API Key。
-- 不需要付费。
-- 稳定性和频率没有官方保障。
-
-更稳定的商业搜索源：
+## 6. 鎼滅储婧愰厤缃?
+榛樿鎼滅储婧愭槸 DuckDuckGo HTML锛?
+- 涓嶉渶瑕?API Key銆?- 涓嶉渶瑕佷粯璐广€?- 绋冲畾鎬у拰棰戠巼娌℃湁瀹樻柟淇濋殰銆?
+鏇寸ǔ瀹氱殑鍟嗕笟鎼滅储婧愶細
 
 ### Serper
 
@@ -172,25 +142,19 @@ export SEARCH_PROVIDER="tavily"
 export TAVILY_API_KEY="..."
 ```
 
-医学、论文、PubMed、DOI 等问题会额外调用 NCBI PubMed E-utilities，不需要 PubMed API Key。
+鍖诲銆佽鏂囥€丳ubMed銆丏OI 绛夐棶棰樹細棰濆璋冪敤 NCBI PubMed E-utilities锛屼笉闇€瑕?PubMed API Key銆?
+## 7. 灞€鍩熺綉璁块棶
 
-## 7. 局域网访问
-
-默认服务监听本机端口 `5173`。如果同一局域网的其他设备要访问：
-
-1. 确认目标电脑防火墙允许 Node.js 或端口 `5173`。
-2. 查看目标电脑内网 IP。
-3. 其他设备访问：
-
+榛樿鏈嶅姟鐩戝惉鏈満绔彛 `5173`銆傚鏋滃悓涓€灞€鍩熺綉鐨勫叾浠栬澶囪璁块棶锛?
+1. 纭鐩爣鐢佃剳闃茬伀澧欏厑璁?Node.js 鎴栫鍙?`5173`銆?2. 鏌ョ湅鐩爣鐢佃剳鍐呯綉 IP銆?3. 鍏朵粬璁惧璁块棶锛?
 ```text
-http://目标电脑IP:5173
+http://鐩爣鐢佃剳IP:5173
 ```
 
-注意：当前页面会把 API Key 保存在浏览器 localStorage。多人共用时建议每个人在自己的浏览器里配置，或改为只使用服务端环境变量。
+娉ㄦ剰锛氬綋鍓嶉〉闈細鎶?API Key 淇濆瓨鍦ㄦ祻瑙堝櫒 localStorage銆傚浜哄叡鐢ㄦ椂寤鸿姣忎釜浜哄湪鑷繁鐨勬祻瑙堝櫒閲岄厤缃紝鎴栨敼涓哄彧浣跨敤鏈嶅姟绔幆澧冨彉閲忋€?
+## 8. 鏇存崲绔彛
 
-## 8. 更换端口
-
-默认端口是 `5173`。可以用 `PORT` 改：
+榛樿绔彛鏄?`5173`銆傚彲浠ョ敤 `PORT` 鏀癸細
 
 ### Windows PowerShell
 
@@ -205,67 +169,48 @@ npm start
 PORT=8080 npm start
 ```
 
-## 9. 后台常驻运行
+## 9. 鍚庡彴甯搁┗杩愯
 
-简单方式是保持终端窗口打开。
-
-如果是 Linux 服务器，可以用 `systemd` 或 `pm2`。本项目没有强制依赖这些工具。
-
-PM2 示例：
-
+绠€鍗曟柟寮忔槸淇濇寔缁堢绐楀彛鎵撳紑銆?
+濡傛灉鏄?Linux 鏈嶅姟鍣紝鍙互鐢?`systemd` 鎴?`pm2`銆傛湰椤圭洰娌℃湁寮哄埗渚濊禆杩欎簺宸ュ叿銆?
+PM2 绀轰緥锛?
 ```bash
 npm install -g pm2
-pm2 start server.js --name local-mirothinker
+pm2 start server.js --name local-research-agent
 pm2 save
 ```
 
-Windows 可以使用任务计划程序、NSSM，或保持 PowerShell 窗口运行。
-
-## 9A. 重新生成分发包
-
-如果你在源代码上做了修改，想重新生成可分发包：
-
+Windows 鍙互浣跨敤浠诲姟璁″垝绋嬪簭銆丯SSM锛屾垨淇濇寔 PowerShell 绐楀彛杩愯銆?
+## 9A. 閲嶆柊鐢熸垚鍒嗗彂鍖?
+濡傛灉浣犲湪婧愪唬鐮佷笂鍋氫簡淇敼锛屾兂閲嶆柊鐢熸垚鍙垎鍙戝寘锛?
 ```powershell
-cd C:\Users\zhao9\Desktop\mirothinker
+cd C:\Users\zhao9\Desktop\Research Agent
 powershell -ExecutionPolicy Bypass -File scripts\build-distribution.ps1
 ```
 
-生成结果：
+鐢熸垚缁撴灉锛?
+- 鍒嗗彂鐩綍锛歚dist\LocalResearchAgent`
+- 鍘嬬缉鍖咃細`dist\LocalResearchAgent-win-x64.zip`
 
-- 分发目录：`dist\LocalMiroThinker`
-- 压缩包：`dist\LocalMiroThinker-win-x64.zip`
+## 10. 杩佺Щ鍘嗗彶浼氳瘽
 
-## 10. 迁移历史会话
+鍘嗗彶浼氳瘽淇濆瓨鍦ㄦ祻瑙堝櫒 localStorage锛屼笉鍦ㄩ」鐩枃浠跺す閲屻€?
+鍥惧舰鍚姩鍣ㄩ噷璁剧疆鐨勭鍙ｄ繚瀛樺湪鍚姩鍣ㄧ洰褰曚笅鐨?`launcher.config` 鏂囦欢涓€?
+濡傛灉鍙鍒堕」鐩枃浠讹紝鍙︿竴鍙扮數鑴戜笉浼氬甫涓婃棫娴忚鍣ㄩ噷鐨勫巻鍙蹭細璇濄€傚綋鍓嶇増鏈繕娌℃湁瀵煎嚭/瀵煎叆浼氳瘽鎸夐挳銆傚鏋滈渶瑕佽縼绉诲巻鍙诧紝鍙互鍚庣画澧炲姞瀵煎嚭 JSON 鍜屽鍏?JSON 鍔熻兘銆?
+## 11. 甯歌闂
 
-历史会话保存在浏览器 localStorage，不在项目文件夹里。
+### 椤甸潰鑳芥墦寮€锛屼絾鍥炵瓟鎻愮ず鏈厤缃ā鍨?
+妫€鏌ュ彸涓婅璁剧疆閲岀殑 API Key锛屾垨鑰呭惎鍔ㄦ椂鏄惁璁剧疆浜?`LLM_API_KEY` / `DEEPSEEK_API_KEY`銆?
+### 娴嬭瘯 API 澶辫触
 
-图形启动器里设置的端口保存在启动器目录下的 `launcher.config` 文件中。
+妫€鏌ワ細
 
-如果只复制项目文件，另一台电脑不会带上旧浏览器里的历史会话。当前版本还没有导出/导入会话按钮。如果需要迁移历史，可以后续增加导出 JSON 和导入 JSON 功能。
+- Base URL 鏄惁鏄?OpenAI-compatible 鍦板潃銆?- Model 鍚嶇О鏄惁褰撳墠璐﹀彿鍙敤銆?- API Key 鏄惁姝ｇ‘銆?- 鐩爣鐢佃剳缃戠粶鏄惁鑳借闂ā鍨嬫湇鍔°€?
+### 鎼滅储缁撴灉涓嶇ǔ瀹?
+DuckDuckGo HTML 涓嶄繚璇佺ǔ瀹氥€傚鏋滈暱鏈熶娇鐢紝寤鸿鍒囨崲鍒?Serper 鎴?Tavily銆?
+### PubMed 鑳戒笉鑳芥煡
 
-## 11. 常见问题
+鍙互銆傚鏈€佸尰瀛︺€佽鏂囥€丏OI銆丳ubMed 鐩稿叧闂浼氬悓鏃朵娇鐢?PubMed E-utilities 鍜岀綉椤垫悳绱€?
+### API Key 瀹夊叏
 
-### 页面能打开，但回答提示未配置模型
-
-检查右上角设置里的 API Key，或者启动时是否设置了 `LLM_API_KEY` / `DEEPSEEK_API_KEY`。
-
-### 测试 API 失败
-
-检查：
-
-- Base URL 是否是 OpenAI-compatible 地址。
-- Model 名称是否当前账号可用。
-- API Key 是否正确。
-- 目标电脑网络是否能访问模型服务。
-
-### 搜索结果不稳定
-
-DuckDuckGo HTML 不保证稳定。如果长期使用，建议切换到 Serper 或 Tavily。
-
-### PubMed 能不能查
-
-可以。学术、医学、论文、DOI、PubMed 相关问题会同时使用 PubMed E-utilities 和网页搜索。
-
-### API Key 安全
-
-如果在页面设置 API Key，它会保存在当前浏览器 localStorage。单机使用通常足够；如果部署给多人使用，建议改成环境变量方式，并隐藏前端 API Key 输入。
+濡傛灉鍦ㄩ〉闈㈣缃?API Key锛屽畠浼氫繚瀛樺湪褰撳墠娴忚鍣?localStorage銆傚崟鏈轰娇鐢ㄩ€氬父瓒冲锛涘鏋滈儴缃茬粰澶氫汉浣跨敤锛屽缓璁敼鎴愮幆澧冨彉閲忔柟寮忥紝骞堕殣钘忓墠绔?API Key 杈撳叆銆?
